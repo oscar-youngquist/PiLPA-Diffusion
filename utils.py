@@ -10,6 +10,23 @@ import matplotlib.pyplot as plt
 folder = './data/experiment'
 filename_fields = ['condition']
 
+class MyDataset(Dataset):
+
+    def __init__(self, inputs, outputs, c):
+        self.inputs = inputs
+        self.outputs = outputs
+        self.c = c
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        Input = self.inputs[idx,]
+        output = self.outputs[idx,]
+        sample = {'input': Input, 'output': output, 'c': self.c}
+
+        return sample
+
 def load_data(folder : str, expnames = None) -> List[dict]:
     ''' Loads csv files from {folder} and return as list of dictionaries of ndarrays '''
     Data = []

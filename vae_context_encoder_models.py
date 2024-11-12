@@ -45,10 +45,10 @@ class VAE_Context_Encoder(nn.Module):
         stdev = variance.sqrt()
 
         # sample noise
-        eplsion = torch.randn(stdev.shape, device=stdev.device)
+        epsilon = torch.randn(stdev.shape, device=stdev.device)
 
         # calculate the "sample" from the latent distribution
-        x = mean + stdev * eplsion
+        x = mean + stdev * epsilon
 
         return x, mean, logvar
     
@@ -67,7 +67,7 @@ class VAE_Context_Encoder(nn.Module):
         x = F.silu(x)
         # Normalization - no size change
         x = self.layer_norm(x)
-        #(Batch_Size, options["enc_hidden_2_out"]) -> (Batch_Size, options["dim_a"]-1)
+        #(Batch_Size, options["enc_hidden_2_out"]) -> (Batch_Size, options["dim_a"])
         x, mean, logvar = self._reparam_trick(x)
         return x, mean, logvar
 
@@ -99,7 +99,7 @@ class VAE_Context_Decoder(nn.Module):
         torch.nn.init.xavier_uniform_(self.decoded_layer.weight)
     
     def forward(self, x):
-        #(Batch_Size, options["dim_a"]-1) -> (Batch_Size, options["dec_hidden_1_in"])
+        #(Batch_Size, options["dim_a"]) -> (Batch_Size, options["dec_hidden_1_in"])
         x = self.input_layer(x)
         x = self.dropout_in(x)
         x = F.silu()

@@ -4,6 +4,31 @@ from torch.nn import functional as F
 import math
 from modules import TimeEmbedding, UNET_Attention_Block, UNET_Block
 
+# Cross-entropy loss
+class Discriminator(nn.Module):
+    def __init__(self, options):
+        super(Discriminator, self).__init__()
+        self.fc1 = nn.Linear(options['dim_a'], options['discrim_h1'])
+        self.fc2 = nn.Linear(options['discrim_h1'], options['discrim_h2'])
+        self.output = nn.Linear(options['discrim_h2'], options['num_c'])
+
+        self.layer_norm = nn.LayerNorm(options['discrim_h2'])
+
+        # init the weights using xavier-intialization
+        torch.nn.init.xavier_uniform_(self.fc1.weight)
+        torch.nn.init.xavier_uniform_(self.fc2.weight)
+        torch.nn.init.xavier_uniform_(self.output.weight)
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.silu(x)
+        x = self.fc2(x)
+        x = self.layer_norm(x)
+        x = F.silu(x)
+        x = self.output(x)
+        return x
+
+
 # Define UNet
 
 # UNET_Block(self, in_size, out_size, time_size)
@@ -16,7 +41,7 @@ class UNet(nn.Module):
         self.options = options
         
         # Down-Sample blocks
-        self.input_block = UNET_Block(options["dim_a"]-1, options["diff_out_1"], options["time_size"])
+        self.input_block = UNET_Block(options["dim_a"], options["diff_out_1"], options["time_size"])
         self.attention_1 = UNET_Attention_Block(options["n_heads"], options["diff_out_1"], options["context_size"])
         self.block_2 = UNET_Block(options["diff_out_1"], options["diff_out_2"], options["time_size"])
         self.attention_2 = UNET_Attention_Block(options["n_heads"], options["diff_out_2"], options["context_size"])
@@ -28,8 +53,8 @@ class UNet(nn.Module):
         # Up-Sample blocks
         self.block_3 = UNET_Block(options["diff_out_2"], options["diff_out_1"], options["time_size"])
         self.attention_3 = UNET_Attention_Block(options["n_heads"], options["diff_out_1"], options["context_size"])
-        self.output_block = UNET_Block(options["diff_out_1"], options["dim_a"]-1, options["time_size"])
-        self.attention_4 = UNET_Attention_Block(options["n_heads"], options["dim_a"]-1, options["context_size"])
+        self.output_block = UNET_Block(options["diff_out_1"], options["dim_a"], options["time_size"])
+        self.attention_4 = UNET_Attention_Block(options["n_heads"], options["dim_a"], options["context_size"])
         self.skip_2_norm = nn.LayerNorm(options["diff_out_2"])
         self.skip_1_norm = nn.LayerNorm(options["diff_out_1"])
 
@@ -42,7 +67,7 @@ class UNet(nn.Module):
     #     norm -> acitvation -> weights
     def forward(self, x, time, context):
         # Down-sample blocks
-        # (Batch_Size, options["dim_a"]-1) (Batch_Size, options["time_size"]) 
+        # (Batch_Size, options["dim_a"]) (Batch_Size, options["time_size"]) 
         #       -> (Batch_Size, options["diff_out_1"])
         x = self.input_block(x, time)
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["context_size"]) 
@@ -84,10 +109,10 @@ class UNet(nn.Module):
         x = self.skip_1_norm(x+skip_1)
         x = F.silu(x)
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["time_size"]) 
-        #       -> (Batch_Size, options["dim_a"]-1)
+        #       -> (Batch_Size, options["dim_a"])
         x = self.output_block(x, time)
-        # (Batch_Size, options["dim_a"]-1) (Batch_Size, options["context_size"]) 
-        #       -> (Batch_Size, options["dim_a"]-1)
+        # (Batch_Size, options["dim_a"]) (Batch_Size, options["context_size"]) 
+        #       -> (Batch_Size, options["dim_a"])
         x = self.attention_4(x, context)
 
         return x
@@ -103,7 +128,7 @@ class Diffusion(nn.Module):
         self.options = options
 
     def forward(self, latent, context, timestep):
-        # latent: (Batch_Size, options["dim_a"]-1)
+        # latent: (Batch_Size, options["dim_a"])
         # context: (Batch_Size, options["context_size"])
         # time: (Batch_Size, options["time_size"])
         # get the time-pos-embedding for this time-step
@@ -126,7 +151,7 @@ class Diffusion(nn.Module):
     
     def get_time_pos_embedding(self, timestep):
         half_dim = self.options["time_size"]//2
-        # definition from "Attention is all you need" paper...
+        # definition from "Attention is all you need" paper https://arxiv.org/abs/1706.03762
         freqs = torch.pow(10000, -torch.arange(start=0, end=half_dim, dtype=torch.float32) / half_dim)
         x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
         return torch.cat([torch.cos(x), torch.sin(x)], dim=-1)
@@ -141,17 +166,26 @@ class Diffusion(nn.Module):
 
         return no_noise_pred
 
-    def denoise_step(self, latent, context, time, alpha, alpha_bar, beta):
-        noise = self.sample_timestep_noise(latent, time)
-
-        # get noise prediction from UNet
-        e_hat = self.forward(latent, context, time)
+    def get_pred_denoised_latent_no_forward(self, e_hat, latent, alpha_bar):
         # perform denoising step
-        pre_scale = 1 / math.sqrt(alpha)
-        e_scale = (1-alpha) / math.sqrt(1-alpha_bar)
-        noise_scale = math.sqrt(beta)
-        new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
+        pre_scale = 1 / math.sqrt(alpha_bar)
+        e_scale = math.sqrt(1-alpha_bar)
+        no_noise_pred = pre_scale * (latent - e_scale * e_hat)
 
+        return no_noise_pred
+
+    def denoise_step(self, latent, context, time, alpha, alpha_bar, beta):
+        new_latent = None
+        with torch.no_grad():
+            noise = self.sample_timestep_noise(latent, time)
+
+            # get noise prediction from UNet
+            e_hat = self.forward(latent, context, time)
+            # perform denoising step
+            pre_scale = 1 / math.sqrt(alpha)
+            e_scale = (1-alpha) / math.sqrt(1-alpha_bar)
+            noise_scale = math.sqrt(beta)
+            new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
         return new_latent
     
     def denoise_step_no_forward(self, e_hat, latent, time, alpha, alpha_bar, beta):
@@ -161,13 +195,13 @@ class Diffusion(nn.Module):
         e_scale = (1-alpha) / math.sqrt(1-alpha_bar)
         noise_scale = math.sqrt(beta)
         new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
-
         return new_latent
     
     def guided_denoise_step(self, latent, context, time, alpha, alpha_bar, beta, guide, guide_weight):        
-        # get noise prediction from UNet
-        e_hat = self.forward(latent, context, time)
-        
-        e_hat_guided = e_hat + guide_weight*guide
+        with torch.no_grad():
+            # get noise prediction from UNet
+            e_hat = self.forward(latent, context, time)
+            
+            e_hat_guided = e_hat + guide_weight*guide
 
-        return self.denoise_step_no_forward(e_hat_guided, latent, time, alpha, alpha_bar, beta)
+            return self.denoise_step_no_forward(e_hat_guided, latent, time, alpha, alpha_bar, beta)

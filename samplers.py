@@ -4,16 +4,16 @@ import sys
 import math
 
 class DDPM:
-    def __init__(self, generator, num_training_steps=50, num_inference_steps=5, 
-                 beta_start=0.00085, beta_end=0.0120, schedule_type='cosine', 
-                 snr_min=5.0, covar_scale=10e-3):
+    def __init__(self, options):
         # Params "beta_start" and "beta_end" taken from: https://github.com/CompVis/stable-diffusion/blob/21f890f9da3cfbeaba8e2ac3c425ee9e998d5229/configs/stable-diffusion/v1-inference.yaml#L5C8-L5C8
-        self.generator = generator
-        self.num_training_steps = num_training_steps
+        self.options = options
+        self.num_training_steps = options["num_training_steps"]
         self.num_inference_steps  = 0
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.schedule_type = schedule_type
+        self.beta_start = options["beta_start"]
+        self.beta_end = options["beta_end"]
+        self.schedule_type = options["schedule_type"]
+        covar_scale = options["covar_scale"]
+        snr_min_value = options["snr_min_value"]
 
         # create the beta schedule
         self.betas = self._get_specified_beta()
@@ -24,17 +24,27 @@ class DDPM:
         self.one = torch.tensor(1.0)
         self.timesteps = torch.from_numpy(np.arange(0, self.num_training_steps)[::-1].copy())
 
-        # Calculate the noise-error loss term weight based on the Singal-to-Noise Ratio (SNR) https://arxiv.org/pdf/2303.09556.pdf
+        print("Training Time-Steps: ", self.timesteps)
+
+        # Calculate the noise-error loss term weight based on the Signal-to-Noise Ratio (SNR) https://arxiv.org/pdf/2303.09556.pdf
+        # snr_{t} = min(\Bar{\alpha}_{t} / (1.0 - \Bar{\alpha}_{t}), snr_min_value)
         snr = self.alpha_bars / (1.0 - self.alpha_bars)
-        self.snr_schedule = torch.minimum(snr, torch.ones_like(snr)*snr_min)
+        self.snr_schedule = torch.minimum(snr, torch.ones_like(snr)*snr_min_value)
 
         # Calcualte weighting term for Physics-Informed loss based on the fixed noise covariance https://arxiv.org/pdf/2403.14404
         self.pinn_weights = torch.ones_like(self.alpha_bars)
-        for i in range(1, self.num_training_steps):
-            self.pinn_weights[i] = 1 / 2*(((1.0 - self.alpha_bars[i-1]) / (1.0 - self.alpha_bars[i])*self.betas[i])/covar_scale)
 
+        for t in range(1, self.num_training_steps):
+            # Sigma_{t} = (1-\Bar{\alpha}_{t-1})/(1-\Bar{\alpha}_T}) * \Beta_{t}
+            # \Bar{\Sigma}_{t} = \Simga_{t} / covar_scale
+            # pinn_weight = 1 / (2*\Bar{\Sigma}_{t})
+            sigma = ((1.0 - self.alpha_bars[t-1]) / (1.0 - self.alpha_bars[t]))*self.betas[t]
+            sigma_bar = sigma / covar_scale
+            self.pinn_weights[t] = 1 / (2*sigma_bar)
+        self.pinn_weights[0] = self.pinn_weights[1]
+        
         # calculate the array of inference timesteps
-        self.set_inference_timesteps(num_inference_steps)
+        self.set_inference_timesteps(options["num_training_steps"])
     
     def _get_specified_betas(self):
         betas = None
@@ -61,6 +71,8 @@ class DDPM:
         inf_step_ratio = self.num_training_steps // self.num_inference_steps
         inference_time_steps = (np.arange(0, self.num_inference_steps) * inf_step_ratio).round()[::-1].copy().astype(np.int64)
         self.inference_time_steps = torch.from_numpy(inference_time_steps)
+
+        print("Inference Time-Steps: ", self.inference_time_steps)
 
     def get_beta(self, timestep):
         if timestep < 0 or timestep > self.num_training_steps:

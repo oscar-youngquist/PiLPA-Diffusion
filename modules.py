@@ -39,7 +39,6 @@ class UNET_Block(nn.Module):
         torch.nn.init.xavier_uniform_(self.time_lin.weight)
 
     def forward(self, x, time):
-        
         # following the norm -> acitvation -> weights flow from diffusion model literature
         # normalize the outputs
         time = F.silu(time)

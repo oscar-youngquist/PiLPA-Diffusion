@@ -2,13 +2,45 @@ import os, re
 from typing import List, Dict
 from ast import literal_eval
 from collections import namedtuple
-
+import torch 
+from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from vae_context_encoder_models import VAE_Conditioning_Model
+from diffusion import Diffusion, Discriminator
 
 folder = './data/experiment'
 filename_fields = ['condition']
+
+def save_models(name, vae_encoder, diff, discrim, options):
+    _output_path = os.path.join(options['output_path'], "model")
+    if not os.path.isdir(_output_path):
+        os.makedirs(_output_path)
+    torch.save({
+        'vae_encoder':vae_encoder.state_dict(),
+        'diffusion':diff.state_dict(),
+        'discrim':discrim.state_dict(),
+        'options':options
+        }, os.path.join(_output_path, (name + '.pth')))
+    
+def load_models(model_path):
+    model = torch.load(model_path)
+    options = model['options']
+
+    vae_encoder = VAE_Conditioning_Model(options=options)
+    diff = Diffusion(options=options)
+    discrim = Discriminator(options=options)
+
+    vae_encoder.load_state_dict(model['vae_encoder'])
+    diff.load_state_dict(model['diffusion'])
+    discrim.load_state_dict(model['discrim'])
+
+    vae_encoder.eval()
+    diff.eval()
+    discrim.eval()
+
+    return vae_encoder, diff, discrim
 
 class MyDataset(Dataset):
 

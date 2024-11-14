@@ -44,7 +44,7 @@ class DDPM:
         self.pinn_weights[0] = self.pinn_weights[1]
         
         # calculate the array of inference timesteps
-        self.set_inference_timesteps(options["num_training_steps"])
+        self.set_inference_timesteps(options["num_inference_steps"])
     
     def _get_specified_betas(self):
         betas = None

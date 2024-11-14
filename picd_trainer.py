@@ -51,7 +51,7 @@ class Train_PICD():
         self.logger = SummaryWriter(self.log_file_path)
 
         print("\n***********Model output path: ", self.output_path_base)
-
+        print("\t Loading Data....")
         RawData = utils.load_data(self.train_data_path)
         Data = utils.format_data(RawData, features=self.features, output=self.label, body_offset=options["body_offset"])
         self.Data = Data
@@ -85,7 +85,8 @@ class Train_PICD():
 
             self.Trainloader.append(trainloader) # for training model
             self.Adaptloader.append(adaptloader) # for LS on M
-
+        print("\t Done Loading Data")
+        print("\t Building Models....")
         # Build Networks
         self.vae_encoder = VAE_Conditioning_Model(options)
         self.discriminator = Discriminator(options)
@@ -95,6 +96,7 @@ class Train_PICD():
         self.vae_encoder_ema = VAE_Conditioning_Model(options)
         self.discriminator_ema = Discriminator(options)
         self.diff_model_ema = Diffusion(options)
+        print("\t Done Building Models")
         
         # build DDPM scheduler
         self.scheduler = DDPM(options)
@@ -109,6 +111,8 @@ class Train_PICD():
         self.vae_decoder_optimizer = optim.Adam(self.vae_encoder.decoder.parameters(), lr=self.lr, eps=1e-08)
         self.diffusion_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr, eps=1e-08)
         self.discriminator_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr_discrim, eps=1e-08)
+
+        print("\tDone building training class")
 
 
     # dump current config file to a json
@@ -144,6 +148,7 @@ class Train_PICD():
             return torch.cat([basis, torch.ones(basis.shape[0], 1).to(basis.device)], dim=-1)
 
     def inference_denoise_loop(self, batch, context):
+        print("\tStarting inference_denoise_loop()....")
         latent = self.sample_noise(batch)
 
         for i, inf_timestep in enumerate(self.scheduler.inference_time_steps):
@@ -155,7 +160,7 @@ class Train_PICD():
 
             latent = self.diff_model.denoise_step(latent, context, inf_timestep, alpha_t, alpha_bar_t, beta_t)
 
-        
+        print("\tReturning from inference_denoise_loop()")
         return latent
 
     def sample_noise(self, batch):
@@ -181,6 +186,7 @@ class Train_PICD():
                                         "diff_total":[], "discrim":[]}
         # Iterate over the desired number of epochs
         for epoch in range(0, self.epochs):
+            print("Starting Epoch: {:d}".format(epoch))
             # Randomize the order in which we iterate over the condition-specific datasets
             arr = np.arange(self.num_train_classes)
             np.random.shuffle(arr)
@@ -202,6 +208,7 @@ class Train_PICD():
                 ###
                 #  Perform K-shot adaptation of mixing parameters M
                 ###
+                print("\tAdapting M parameters....")
                 X_kshot = kshot_data['input'].to(self.device)                # K x dim_x
                 Y_kshot = kshot_data['output'].to(self.device)               # K x dim_y
                 
@@ -240,10 +247,12 @@ class Train_PICD():
                 X_kshot.cpu()
                 Y_kshot.cpu()
                 M.cpu()
+                print("\tDone Adapting M parameters")
 
                 ###
                 #  Perform least-sqaures approximation of ground-truth latents (Z^{T}) for diffusion training
                 ###
+                print("\tApproximating Z^0 via least-sqaures....")
                 labels = data['output'].to(self.device)                      # B x dim_y
                 M_star_T = M_star.transpose(0,1)                             # dim_y x dim_a
                 temp_1 = torch.mm(labels, M_star_T)                          # B x dim_a
@@ -253,10 +262,12 @@ class Train_PICD():
                 # move temp values to cpu
                 temp_1.cpu()
                 temp_2.cpu()
+                print("\tDone Approximating Z^0 via least-sqaures")
 
                 ###
                 #  Train VAE encoder and diffusion model
                 ###
+                print("\tTraining VAE and Diffusion Model....")
                 #     set models to training mode
                 self.vae_encoder.train()
                 self.diff_model.train()
@@ -342,11 +353,14 @@ class Train_PICD():
                 vae_dec_loss.backward()
                 self.vae_encoder_optimizer.step()
                 self.vae_decoder_optimizer.step()
-                self.diffusion_optimizer.step()                
+                self.diffusion_optimizer.step()
+
+                print("\tDone Training VAE and diffusion model")                
 
                 ###
                 #   Train discriminator
                 ###
+                print("\tTraining Discriminator Network....")
                 self.discriminator.train()
                 if np.random.rand() <= 1.0 / self.discrim_save_freq:
                     self.discriminator_optimizer.zero_grad()
@@ -378,6 +392,7 @@ class Train_PICD():
 
                     discrim_loss.backward()
                     self.discriminator_optimizer.step()
+                    print("\tDone Training Discriminator Network")
                 # end discriminator training statement
 
 
@@ -385,6 +400,7 @@ class Train_PICD():
                 #  Spectral normalization of VAE and diffusion model
                 ###
                 if self.sn > 0:
+                    print("\tSpectural Normalization....")
                     #    VAE
                     self.vae_encoder.cpu()
                     for param in self.vae_encoder.parameters():
@@ -404,11 +420,14 @@ class Train_PICD():
                             s = np.linalg.norm(W,2)
                             if s > self.sn:
                                 param.data = (param / s) * self.sn
+                    
+                    print("\tDone with Spectural Normalization")
 
                 
                 ###
                 #  Perform EMA (Temporal Averaging) Updates
                 ###
+                print("\tPerforming EMA....")
                 decay = 0 if step < self.ema_warm_up else self.ema_decay
                 #     VAE
                 self.ema_accumulate(self.vae_encoder_ema, self.vae_encoder, decay)
@@ -416,6 +435,7 @@ class Train_PICD():
                 self.ema_accumulate(self.diff_model_ema, self.diff_model, decay)
                 #     discriminator
                 self.ema_accumulate(self.discriminator_ema, self.discriminator, decay)
+                print("\tDone Performing EMA")
 
                 # TODO: Need to perform Spectral Normalization on EMA model??
 
@@ -425,6 +445,7 @@ class Train_PICD():
                 # {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
                 # "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
                 # "diff_total":[], "discrim":[]}
+                print("\tLogging Batch Results....")
                     
                 #     VAE Reconstruction loss
                 self.logger.add_scalar("train/step/vae_recon",
@@ -476,6 +497,7 @@ class Train_PICD():
                                         diff_loss_total.item(),
                                         step)
                 epoch_average_losses_train["discrim"].append(diff_loss_total.item())
+                print("\tDone Logging Batch Results....")
 
 
                 # increment our step counter for each processed batch

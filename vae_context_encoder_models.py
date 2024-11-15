@@ -31,7 +31,7 @@ class VAE_Context_Encoder(nn.Module):
         torch.nn.init.xavier_uniform_(self.hidden_layer_1.weight)
         torch.nn.init.xavier_uniform_(self.hidden_layer_2.weight)
         torch.nn.init.xavier_uniform_(self.mu_layer.weight)
-        torch.nn.init.xavier_uniform_(self.mu_layer.sigma_layer)
+        torch.nn.init.xavier_uniform_(self.sigma_layer.weight)
 
     
     def _reparam_trick(self, x):
@@ -74,7 +74,7 @@ class VAE_Context_Encoder(nn.Module):
 
 class VAE_Context_Decoder(nn.Module):
     def __init__(self, options):
-        super(VAE_Context_Encoder, self).__init__()
+        super(VAE_Context_Decoder, self).__init__()
         self.options = options
 
         # network is structured via:
@@ -90,7 +90,7 @@ class VAE_Context_Decoder(nn.Module):
         self.dropout_h2 = nn.Dropout(options["dropout"])
         
         # layer normalization before the decoding layer
-        self.layer_norm = nn.LayerNorm(options["hidden_2_out"])
+        self.layer_norm = nn.LayerNorm(options["dec_hidden_2_out"])
 
         # init the weights using xavier-intialization
         torch.nn.init.xavier_uniform_(self.input_layer.weight)
@@ -102,7 +102,7 @@ class VAE_Context_Decoder(nn.Module):
         #(Batch_Size, options["dim_a"]) -> (Batch_Size, options["dec_hidden_1_in"])
         x = self.input_layer(x)
         x = self.dropout_in(x)
-        x = F.silu()
+        x = F.silu(x)
         #(Batch_Size, options["dec_hidden_1_in"]) -> (Batch_Size, options["dec_hidden_2_in"])
         x = self.hidden_layer_1(x)
         x = self.dropout_h1(x)
@@ -126,7 +126,7 @@ class VAE_Context_Decoder(nn.Module):
 # Container class for VAE robot context encoder and decoder, encapsulates calculating the losses
 class VAE_Conditioning_Model(nn.Module):
     def __init__(self, options):
-        super(VAE_Context_Encoder, self).__init__()
+        super(VAE_Conditioning_Model, self).__init__()
         self.options = options
 
         self.encoder = VAE_Context_Encoder(options)
@@ -145,10 +145,11 @@ class VAE_Conditioning_Model(nn.Module):
         x_hat = self.decode(z)
         return x_hat, z, mean, logvar
     
+    # adding a mean to scale both of these to be in roughly the same order of magnitude as the diffusion loss
     def compute_kld_loss(self, mean, logvar):
-        kld = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        kld = torch.mean(-0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()))
         return kld
     
     def compute_vae_recon_loss(self, x, x_hat):
-        recon_loss = F.binary_cross_entropy(x, x_hat, reduction="sum")
+        recon_loss = F.mse_loss(x_hat, x, reduction="mean")
         return recon_loss

@@ -13,7 +13,7 @@ from diffusion import Diffusion, Discriminator
 folder = './data/experiment'
 filename_fields = ['condition']
 
-def save_models(name, vae_encoder, diff, discrim, options):
+def save_models(name, vae_encoder, diff, discrim, vae_encoder_ema, diff_ema, discrim_ema, options):
     _output_path = os.path.join(options['output_path'], "model")
     if not os.path.isdir(_output_path):
         os.makedirs(_output_path)
@@ -21,6 +21,9 @@ def save_models(name, vae_encoder, diff, discrim, options):
         'vae_encoder':vae_encoder.state_dict(),
         'diffusion':diff.state_dict(),
         'discrim':discrim.state_dict(),
+        'vae_encoder_ema':vae_encoder_ema.state_dict(),
+        'diffusion_ema':diff_ema.state_dict(),
+        'discrim_ema':discrim_ema.state_dict(),
         'options':options
         }, os.path.join(_output_path, (name + '.pth')))
     
@@ -32,15 +35,27 @@ def load_models(model_path):
     diff = Diffusion(options=options)
     discrim = Discriminator(options=options)
 
+    vae_encoder_ema = VAE_Conditioning_Model(options=options)
+    diff_ema = Diffusion(options=options)
+    discrim_ema = Discriminator(options=options)
+
     vae_encoder.load_state_dict(model['vae_encoder'])
     diff.load_state_dict(model['diffusion'])
     discrim.load_state_dict(model['discrim'])
+
+    vae_encoder_ema.load_state_dict(model['vae_encoder_ema'])
+    diff_ema.load_state_dict(model['diffusion_ema'])
+    discrim_ema.load_state_dict(model['discrim_ema'])
 
     vae_encoder.eval()
     diff.eval()
     discrim.eval()
 
-    return vae_encoder, diff, discrim
+    vae_encoder_ema.eval()
+    diff_ema.eval()
+    discrim_ema.eval()
+
+    return vae_encoder, diff, discrim, vae_encoder_ema, diff_ema, discrim_ema
 
 class MyDataset(Dataset):
 

@@ -133,7 +133,13 @@ class Diffusion(nn.Module):
         # time: (Batch_Size, options["time_size"])
         # get the time-pos-embedding for this time-step
         time_pose_embed = self.get_time_pos_embedding(timestep)
-        
+
+        # print(time_pose_embed.device)
+        time_pose_embed = time_pose_embed.to(latent.device)
+        # print(latent.device)
+        # print(time_pose_embed.device)
+        # print(next(self.time_embedding.parameters()).device)
+
         time_pose_embed = self.time_embedding(time_pose_embed)
         
         output = self.unet(latent, time_pose_embed, context)
@@ -150,10 +156,18 @@ class Diffusion(nn.Module):
         return noise
     
     def get_time_pos_embedding(self, timestep):
+        # print(timestep)
+        # print(timestep.shape)
         half_dim = self.options["time_size"]//2
         # definition from "Attention is all you need" paper https://arxiv.org/abs/1706.03762
         freqs = torch.pow(10000, -torch.arange(start=0, end=half_dim, dtype=torch.float32) / half_dim)
-        x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
+        x = None
+        if len(timestep.shape) < 1:
+            x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
+        else:
+            x = torch.tensor(timestep[:,None], dtype=torch.float32) * freqs[None]
+        # x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
+        # x = torch.tensor(temp, dtype=torch.float32)[:, None] * freqs[None]
         return torch.cat([torch.cos(x), torch.sin(x)], dim=-1)
 
     def get_pred_denoised_latent(self, latent, context, time, alpha_bar):
@@ -188,6 +202,22 @@ class Diffusion(nn.Module):
             new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
         return new_latent
     
+
+    def denoise_step_train(self, latent, context, time, alpha, alpha_bar, beta):
+        new_latent = None
+        noise = self.sample_timestep_noise(latent, time)
+
+        # get noise prediction from UNet
+        e_hat = self.forward(latent, context, time)
+        # perform denoising step
+        pre_scale = 1 / math.sqrt(alpha)
+        e_scale = (1-alpha) / math.sqrt(1-alpha_bar)
+        noise_scale = math.sqrt(beta)
+        new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
+        
+        return new_latent
+    
+
     def denoise_step_no_forward(self, e_hat, latent, time, alpha, alpha_bar, beta):
         noise = self.sample_timestep_noise(latent, time)
         # perform denoising step

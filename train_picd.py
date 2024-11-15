@@ -79,12 +79,12 @@ if __name__ == '__main__':
     parser.add_argument('--num-epochs', type=int, default=10000, help='Number of epochs to train (default: 10000)')
     parser.add_argument('--learning-rate', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
     parser.add_argument('--learning-rate-dis', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
-    parser.add_argument('--model-save-freq', type=int, default=100, help='Number of epochs between model saves (default: 100)')
+    parser.add_argument('--model-save-freq', type=int, default=50, help='Number of epochs between model saves (default: 100)')
     parser.add_argument('--SN', type=float, default=6.0, help='Max single-layer spectural norm (default: 6.0)')
     parser.add_argument('--gamma', type=float, default=10, help='Max magnitude of a (default: 10.0)')
     parser.add_argument('--frequency-h', type=float, default=2.0, help='Phi/Dis. update ratio (default: 2.0)')
-    parser.add_argument('--K-shot', type=int, default=32, help='Hidden layer size for discriminator (default: 64)')
-    parser.add_argument('--phi-shot', type=int, default=256, help='Training batch-size (default: 64)')
+    parser.add_argument('--K-shot', type=int, default=256, help='Hidden layer size for discriminator (default: 64)')
+    parser.add_argument('--phi-shot', type=int, default=512, help='Training batch-size (default: 64)')
     parser.add_argument('--device', type=str, default='cuda:0', help='Training device (default: cuda:0)')
 
     # binary decisions
@@ -100,20 +100,27 @@ if __name__ == '__main__':
 
     # Diffusion / Model Parameters
     #     VAE encoder/decoder
-    parser.add_argument('--context-size', type=int, default=10, help='Size of VAE robot-state context vector (default: 10)')
-    parser.add_argument('--enc-hidden-1-in', type=int, default=52, help='Input size of first hidden layer for VAE encoder (default: 52)')
-    parser.add_argument('--enc-hidden-2-in', type=int, default=36, help='Output size of first hidden layer for VAE encoder (default: 36)')
-    parser.add_argument('--enc-hidden-2-out', type=int, default=18, help='Output size of second hidden layer for VAE encoder (default: 18)')
+    parser.add_argument('--context-size', type=int, default=12, help='Size of VAE robot-state context vector (default: 10)')
+    parser.add_argument('--enc-hidden-1-in', type=int, default=40, help='Input size of first hidden layer for VAE encoder (default: 52)')
+    parser.add_argument('--enc-hidden-2-in', type=int, default=27, help='Output size of first hidden layer for VAE encoder (default: 36)')
+    parser.add_argument('--enc-hidden-2-out', type=int, default=14, help='Output size of second hidden layer for VAE encoder (default: 18)')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout probability (default: 0.1 - 10\%)')
-    parser.add_argument('--dec-hidden-1-in', type=int, default=18, help='Input size of first hidden layer for VAE decoder (default: 18)')
-    parser.add_argument('--dec-hidden-2-in', type=int, default=36, help='Output size of first hidden layer for VAE decoder (default: 36)')
-    parser.add_argument('--dec-hidden-2-out', type=int, default=52, help='Output size of second hidden layer for VAE decoder (default: 52)')
+    parser.add_argument('--dec-hidden-1-in', type=int, default=14, help='Input size of first hidden layer for VAE decoder (default: 18)')
+    parser.add_argument('--dec-hidden-2-in', type=int, default=27, help='Output size of first hidden layer for VAE decoder (default: 36)')
+    parser.add_argument('--dec-hidden-2-out', type=int, default=40, help='Output size of second hidden layer for VAE decoder (default: 52)')
 
     #    Diffusion model parameters
-    parser.add_argument('--time-size', type=int, default=10, help='Size of the timestep embedding (default: 10)')
-    parser.add_argument('--diff-out-1', type=int, default=10, help='First hidden layer size for diffusion UNet (default: 10)')
-    parser.add_argument('--diff-out-2', type=int, default=8, help='Second hidden layer size for  diffusion UNet (default: 8)')
+    parser.add_argument('--discrim-h1', type=int, default=80, help='First hidden layer size for discriminator (default: 40)')
+    parser.add_argument('--discrim-h2', type=int, default=40, help='First hidden layer size for discriminator (default: 20)')
+    parser.add_argument('--time-size', type=int, default=12, help='Size of the timestep embedding (default: 10)')
+    parser.add_argument('--diff-out-1', type=int, default=14, help='First hidden layer size for diffusion UNet (default: 10)')
+    parser.add_argument('--diff-out-2', type=int, default=12, help='Second hidden layer size for  diffusion UNet (default: 8)')
+    parser.add_argument('--dim-a', type=int, default=16, help='Number of basis-functions (defaut: 12)')
     parser.add_argument('--n-heads', type=int, default=2, help='Number of attention head in diff. UNet context conditioning layers (default: 2)')
+
+    parser.add_argument('--kl-weight', type=float, default=0.001, help='Maximum SNR weight value (default: 5.0)')
+    # PINN loss fixed noise covaraiance scale factor https://arxiv.org/pdf/2403.14404
+    parser.add_argument('--res-weight', type=float, default=0.00001, help='PINN loss weigth scale factor (default: 0.01)')
 
     #    Diffusion scheduler parameters
     parser.add_argument('--num-training-steps', type=int, default=50, help='Number of training steps for the diffusion model (default: 50)')
@@ -141,7 +148,6 @@ if __name__ == '__main__':
                         default=['body_rpy', 'q', 'body_velo', 'body_ang_velo', 'q_dot','tau_cmd'], 
                         help='Values used an input data (default: [body_rpy,q,body_velo,body_ang_velo,q_dot,tau_cmd])')
     parser.add_argument('--label', type=str, default='tau_residual_cmd_cs', help='Name of training lable (target)')
-    parser.add_argument('--dim-a', type=int, default=12, help='Number of basis-functions (defaut: 12)')
     parser.add_argument('--output-prefix', type=str, default='', help='Prefix for output folder (default: '')')
 
 
@@ -164,18 +170,14 @@ if __name__ == '__main__':
     options['SN']              = 4     # maximum single-layer spectral norm
     options['shuffle']         = True
     options["body_offset"]     = 0
-    options['K_shot']          = 32 # number of K-shot for least square on a
-    options['phi_shot']        = 256 # batch size for training phi
+    options['K_shot']          = 256 # number of K-shot for least square on a
+    options['phi_shot']        = 512 # batch size for training phi
     options['loss_type']       = 'crossentropy-loss'
     options['display_progress'] = False
 
     # find keys we need to copy out of args
     args_dict = vars(args)
     config_keys = args_dict.keys()
-
-    print(args_dict)
-    print("\n\n")
-    print(options)
 
     # print(config_keys)
 
@@ -201,4 +203,4 @@ if __name__ == '__main__':
 
 # python3 train_rina.py --output-prefix cmd_residual_cs_update/corrected/extended_state --num-epochs 15000 --label tau_residual_cmd_cs --discrim-hidden 40 --phi-first-out 100 --phi-second-out 128  --device cuda:0 --phi-shot 2048 --K-shot 1024 --features body_rpy q body_velo body_ang_velo q_dot tau_cmd --no-save-data-plots --learning-rate 0.00069 --alpha 0.1 --dim-a 16 --SN 6 --gamma 10
 
-# python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests 
+# python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 1

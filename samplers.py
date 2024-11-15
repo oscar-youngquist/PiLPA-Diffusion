@@ -16,7 +16,7 @@ class DDPM:
         snr_min_value = options["snr_min_value"]
 
         # create the beta schedule
-        self.betas = self._get_specified_beta()
+        self.betas = self._get_specified_betas()
         # create alphas 
         self.alphas = 1.0 - self.betas
         # calculate alpha bars \Bar{\alpha}_{t} = \prod_{i=0}^{t} \alpha_{i}
@@ -24,7 +24,7 @@ class DDPM:
         self.one = torch.tensor(1.0)
         self.timesteps = torch.from_numpy(np.arange(0, self.num_training_steps)[::-1].copy())
 
-        print("Training Time-Steps: ", self.timesteps)
+        # print("Training Time-Steps: ", self.timesteps)
 
         # Calculate the noise-error loss term weight based on the Signal-to-Noise Ratio (SNR) https://arxiv.org/pdf/2303.09556.pdf
         # snr_{t} = min(\Bar{\alpha}_{t} / (1.0 - \Bar{\alpha}_{t}), snr_min_value)
@@ -39,10 +39,15 @@ class DDPM:
             # \Bar{\Sigma}_{t} = \Simga_{t} / covar_scale
             # pinn_weight = 1 / (2*\Bar{\Sigma}_{t})
             sigma = ((1.0 - self.alpha_bars[t-1]) / (1.0 - self.alpha_bars[t]))*self.betas[t]
+            # print("sigma: ", sigma)
             sigma_bar = sigma / covar_scale
+            # print("sigma_bar: ", sigma_bar)
             self.pinn_weights[t] = 1 / (2*sigma_bar)
+            # print("self.pinn_weights[t]: ", self.pinn_weights[t])
         self.pinn_weights[0] = self.pinn_weights[1]
-        
+
+
+
         # calculate the array of inference timesteps
         self.set_inference_timesteps(options["num_inference_steps"])
     
@@ -72,7 +77,7 @@ class DDPM:
         inference_time_steps = (np.arange(0, self.num_inference_steps) * inf_step_ratio).round()[::-1].copy().astype(np.int64)
         self.inference_time_steps = torch.from_numpy(inference_time_steps)
 
-        print("Inference Time-Steps: ", self.inference_time_steps)
+        # print("Inference Time-Steps: ", self.inference_time_steps)
 
     def get_beta(self, timestep):
         if timestep < 0 or timestep > self.num_training_steps:
@@ -121,7 +126,7 @@ class DDPM:
             print("DDPM.get_pinn_weight(timestep):timestep {:d} is not valid, exiting".format(timestep))
             sys.exit()
 
-        self.pinn_weights[timestep] 
+        return self.pinn_weights[timestep] 
 
     def get_minSNR_weight(self, timestep):
         if timestep < 0 or timestep > self.num_training_steps:

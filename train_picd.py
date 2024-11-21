@@ -72,13 +72,6 @@ if __name__ == '__main__':
                         default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/eval_data/', 
                         help='Path to eval data')
 
-    # parser.add_argument('--train-path', type=str, 
-    #                     default='/work/pi_hzhang2_umass_edu/oyoungquist_umass_edu/RINA/rina/data/06_24_2024_formal/training_data_corrected/', 
-    #                     help='Path to training data')
-    # parser.add_argument('--test-path', type=str, 
-    #                     default='/work/pi_hzhang2_umass_edu/oyoungquist_umass_edu/RINA/rina/data/06_24_2024_formal/eval_data_corrected/', 
-    #                     help='Path to training data')
-
     # old carried over RINA params
     parser.add_argument('--num-epochs', type=int, default=10000, help='Number of epochs to train (default: 10000)')
     parser.add_argument('--learning-rate', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
@@ -212,3 +205,5 @@ if __name__ == '__main__':
 # python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 1
 
 # python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100 --dropout 0.3 --learning-rate 0.00001 --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --kl-weight 0.0001 --res-weight 0.1 --ema-decay 0
+
+# python3 train_picd.py --output-prefix debuging_vae_pretrain --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100 --dropout 0.3 --learning-rate 0.00001 --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --kl-weight 0.0001 --res-weight 0.1 --ema-decay 0 --vae-warm-up 10

@@ -11,11 +11,11 @@ import matplotlib.pyplot as plt
 import json
 import os 
 import utils
-from vae_context_encoder_models import VAE_Conditioning_Model
+from vae_context_encoder_models import VAE_Conditioning_Model, VAE_Discriminator
 from samplers import DDPM
 from diffusion import Diffusion, Discriminator
 from torchsummary import summary
-
+import mlmodel
 
 class Train_PICD():
 
@@ -52,6 +52,7 @@ class Train_PICD():
         self.log_file_path = options['tensorboard_folder']
         self.vae_kl_weight = options['kl_weight']
         self.residual_weight = options['res_weight']
+        self.alpha = options['alpha']
         self.logger = SummaryWriter(self.log_file_path)
 
         print("\n***********Model output path: ", self.output_path_base)
@@ -101,12 +102,19 @@ class Train_PICD():
         self.vae_encoder = VAE_Conditioning_Model(options)
         self.discriminator = Discriminator(options)
         self.diff_model = Diffusion(options)
+        self.vae_discrim = VAE_Discriminator(options)
 
         # Make copies for EMA
         self.vae_encoder_ema = VAE_Conditioning_Model(options)
         self.discriminator_ema = Discriminator(options)
         self.diff_model_ema = Diffusion(options)
+        self.vae_discrim_ema = VAE_Discriminator(options)
         print("\t Done Building Models")
+
+        # maybe we will want to carry over the discriminator as well??
+        temp_rina_model = mlmodel.load_model(self.options["rina_model_path"])
+        self.rina_model = temp_rina_model.phi
+        self.rina_model.eval()
         
         # build DDPM scheduler
         self.scheduler = DDPM(options)
@@ -115,12 +123,14 @@ class Train_PICD():
         #     note - VAE has built-in loss functions
         self.diff_loss = nn.MSELoss(reduction='none')
         self.discrim_loss = nn.CrossEntropyLoss(reduction='none')
+        self.vae_discrim_loss = nn.CrossEntropyLoss()
 
         # create optimizers
         self.vae_encoder_optimizer = optim.Adam(self.vae_encoder.encoder.parameters(), lr=self.lr, eps=1e-08)
         self.vae_decoder_optimizer = optim.Adam(self.vae_encoder.decoder.parameters(), lr=self.lr, eps=1e-08)
         self.diffusion_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr, eps=1e-08)
         self.discriminator_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr_discrim, eps=1e-08)
+        self.vae_discriminator_optimizer = optim.Adam(self.vae_discrim.parameters(), lr=self.lr_discrim, eps=1e-08)
 
         self.histogram_adder(-1)
 
@@ -172,9 +182,16 @@ class Train_PICD():
             _name = "discrim_weights/" + name
             self.logger.add_histogram(_name, params, curr_epoch)
 
+    
+    # Currently using discriminator to regularize context encoder
     def pretrain_vae_encoder(self):
+        vae_training_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "vae_discrim":[], "vae_discriminator":[]}
+        vae_validation_averages = {"vae_recon":[], "vae_kl":[],  "vae_encoder":[], "vae_decoder":[], "vae_discrim":[]}
+
+        vae_step = 0
         for warm_up_epoch in range(0, self.vae_warm_up):
-             # randomly iterate over the condition-specific datasets self.num_batches
+            per_epoch_losses = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "vae_discrim":[], "vae_discriminator":[]}
+            # randomly iterate over the condition-specific datasets self.num_batches
             for batch_idx in range(0, self.num_batches):
                 # print("\tStarting Batch: {:d}".format(batch_idx))
                 # Randomize the order in which we iterate over the condition-specific datasets
@@ -189,8 +206,10 @@ class Train_PICD():
                     # print("\tTraining VAE and Diffusion Model....")
                     #     set models to training mode
                     self.vae_encoder.train()
+                    self.vae_discrim.eval()
                     #     move models to GPU
                     self.vae_encoder.to(self.device)
+                    self.vae_discrim.to(self.device)
 
                     #     zero the optimizers
                     self.vae_decoder_optimizer.zero_grad()
@@ -203,13 +222,17 @@ class Train_PICD():
                     #    decode the robot context (used later)
                     decoded_context = self.vae_encoder.decode(context)
 
+                    # make discriminator pred on context
+                    c_labels = data['c'].type(torch.long).to(self.device)
+                    discrim_preds = self.vae_discrim(context)
+                    vae_discrim_loss = self.vae_discrim_loss(discrim_preds, c_labels)
 
                     #    VAE losses
                     vae_recon_loss = self.vae_encoder.compute_vae_recon_loss(inputs, decoded_context)
-                    vae_kl_loss = self.vae_encoder.compute_kld_loss(means, logvars)
+                    vae_kl_loss =  self.vae_kl_weight * self.vae_encoder.compute_kld_loss(means, logvars)
                     #    TODO: do we need to add weights to VAE components? probably need to scale the VAE losses down...
                     #    VAE losses ~10e5, diff-loss ~10e1....
-                    vae_enc_loss = vae_recon_loss + self.vae_kl_weight * vae_kl_loss
+                    vae_enc_loss = vae_recon_loss + vae_kl_loss - self.alpha*vae_discrim_loss
                     vae_dec_loss = vae_recon_loss
 
                     # update model parameters
@@ -220,6 +243,167 @@ class Train_PICD():
                     self.vae_encoder_optimizer.step()
                     self.vae_decoder_optimizer.step()
 
+
+                    # train discriminator
+                    vae_discrim_loss_dis = None
+                    if np.random.rand() <= 1.0 / self.discrim_save_freq:
+                        self.vae_discrim.train()
+                        self.vae_discriminator_optimizer.zero_grad()
+                        temp, _, _ = self.vae_encoder.encode(inputs)
+                        temp = temp.detach()
+
+                        discrim_preds = self.vae_discrim(temp)
+                        vae_discrim_loss_dis = self.vae_discrim_loss(discrim_preds, c_labels)
+                        
+                        vae_discrim_loss_dis.backward()
+                        self.vae_discriminator_optimizer.step()
+
+
+                    if self.sn > 0:
+                        # print("\tSpectural Normalization....")
+                        #    VAE
+                        self.vae_encoder.cpu()
+                        for param in self.vae_encoder.parameters():
+                            W = param.detach().numpy()
+                            if W.ndim > 1:
+                                s = np.linalg.norm(W,2)
+                                if s > self.sn:
+                                    param.data = (param / s) * self.sn
+
+                    # vae_training_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "vae_discrim":[], "vae_discriminator":[]}
+                    #     VAE Reconstruction loss
+                    per_epoch_losses["vae_recon"].append(vae_recon_loss.item())
+                    #     VAE KL loss
+                    per_epoch_losses["vae_kl"].append(vae_kl_loss.item())
+                    #     VAE encoder loss
+                    per_epoch_losses["vae_encoder"].append(vae_enc_loss.item())
+                    #     VAE decoder loss
+                    per_epoch_losses["vae_decoder"].append(vae_dec_loss.item())
+                    #     VAE discriminator
+                    per_epoch_losses["vae_discrim"].append(vae_discrim_loss.item())
+
+                    if vae_discrim_loss_dis is not None:
+                        per_epoch_losses["vae_discriminator"].append(vae_discrim_loss_dis.item())
+                        
+                    vae_step += 1
+                # loop over sub-datasets
+            # loop over batches
+            #     VAE Reconstruction loss
+            self.logger.add_scalar("vae_train_epoch/vae_recon",
+                        np.mean(per_epoch_losses["vae_recon"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_recon"].extend(per_epoch_losses["vae_recon"])
+            per_epoch_losses["vae_recon"] = []
+            #     VAE KL loss
+            self.logger.add_scalar("vae_train_epoch/vae_kl",
+                        np.mean(per_epoch_losses["vae_kl"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_kl"].extend(per_epoch_losses["vae_kl"])
+            per_epoch_losses["vae_kl"] = []
+            #     VAE encoder loss
+            self.logger.add_scalar("vae_train_epoch/vae_encoder",
+                        np.mean(per_epoch_losses["vae_encoder"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_encoder"].extend(per_epoch_losses["vae_encoder"])
+            per_epoch_losses["vae_encoder"] = []
+            #     VAE decoder loss
+            self.logger.add_scalar("vae_train_epoch/vae_decoder",
+                        np.mean(per_epoch_losses["vae_decoder"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_decoder"].extend(per_epoch_losses["vae_decoder"])
+            per_epoch_losses["vae_decoder"] = []   
+            #     VAE discrim loss
+            self.logger.add_scalar("vae_train_epoch/vae_discrim",
+                        np.mean(per_epoch_losses["vae_discrim"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_discrim"].extend(per_epoch_losses["vae_discrim"])
+            per_epoch_losses["vae_discrim"] = []
+            #     VAE discriminator loss
+            self.logger.add_scalar("vae_train_epoch/vae_discriminator",
+                        np.mean(per_epoch_losses["vae_discriminator"]),
+                        warm_up_epoch)
+            vae_training_averages["vae_discriminator"].extend(per_epoch_losses["vae_discriminator"])
+            per_epoch_losses["vae_discriminator"] = []
+
+            # Perform validation loop
+            val_vae_recon = []
+            val_vae_kl = []
+            val_vae_dec = []
+            val_vae_enc = []
+            val_vae_discrim = []
+            with torch.no_grad():
+                for j in range(len(self.TestData)):
+                    input, output, condition = self.TestData[j].X, self.TestData[j].Y, self.TestData[j].C
+                    # return vae_recon_loss, vae_kl_loss, vae_enc_loss, vae_dec_loss, vae_discrim_loss
+                    val_vae_recon_loss, vae_kl_loss, vae_enc_loss, vae_dec_loss, vae_discrim_loss = self.pretrain_vae_validate(input, output, condition)
+                    
+                    val_vae_recon.append(val_vae_recon_loss.item())
+                    val_vae_kl.append(vae_kl_loss.item())
+                    val_vae_dec.append(vae_dec_loss.item())
+                    val_vae_enc.append(vae_enc_loss.item())
+                    val_vae_discrim.append(vae_discrim_loss.item())
+                    
+                val_vae_recon = np.mean(val_vae_recon)
+                val_vae_kl = np.mean(val_vae_kl)
+                val_vae_dec = np.mean(val_vae_dec)
+                val_vae_enc = np.mean(val_vae_enc)
+                val_vae_discrim = np.mean(val_vae_discrim)
+
+            #    VAE recon loss
+            self.logger.add_scalar("vae_val/vae_recon",
+                                    val_vae_recon,
+                                    warm_up_epoch)
+            vae_validation_averages["vae_recon"].append(val_vae_recon)
+            #    VAE KL loss
+            self.logger.add_scalar("vae_val/vae_kl",
+                                    val_vae_kl,
+                                    warm_up_epoch)
+            vae_validation_averages["vae_kl"].append(val_vae_kl)
+            #    VAE recon loss
+            self.logger.add_scalar("vae_val/vae_encoder",
+                                    val_vae_enc,
+                                    warm_up_epoch)
+            vae_validation_averages["vae_encoder"].append(val_vae_enc)
+            #    VAE KL loss
+            self.logger.add_scalar("vae_val/vae_decoder",
+                                    val_vae_dec,
+                                    warm_up_epoch)
+            vae_validation_averages["vae_decoder"].append(val_vae_dec)
+            #    VAE discriminator loss
+            self.logger.add_scalar("vae_val/vae_discrim",
+                                    val_vae_discrim,
+                                    warm_up_epoch)
+            vae_validation_averages["vae_discrim"].append(val_vae_discrim)                    
+
+
+    def pretrain_vae_validate(self, input, labels, C):
+        fullset = utils.MyDataset(input, labels, C)
+        inputs = torch.from_numpy(fullset['input']).to(torch.float32).to(self.device)     # K x dim_x
+        labels = torch.from_numpy(fullset['output']).to(torch.float32).to(self.device)    # K x dim_y
+
+        c_labels = torch.zeros((inputs.shape[0], self.num_test_classes))
+        for k in range(inputs.shape[0]):
+            c_labels[k][fullset['c']] = 1
+        c_labels = c_labels.type(torch.float32).to(self.device)
+
+        # encode the robot contexts
+        context, means, logvars = self.vae_encoder.encode(inputs)
+        #    decode the robot context (used later)
+        decoded_context = self.vae_encoder.decode(context)
+
+        # make discriminator pred on context
+        discrim_preds = self.vae_discrim(context)
+        vae_discrim_loss = self.vae_discrim_loss(discrim_preds, c_labels)
+
+        #    VAE losses
+        vae_recon_loss = self.vae_encoder.compute_vae_recon_loss(inputs, decoded_context)
+        vae_kl_loss =  self.vae_kl_weight * self.vae_encoder.compute_kld_loss(means, logvars)
+        #    TODO: do we need to add weights to VAE components? probably need to scale the VAE losses down...
+        #    VAE losses ~10e5, diff-loss ~10e1....
+        vae_enc_loss = vae_recon_loss + vae_kl_loss - self.alpha*vae_discrim_loss
+        vae_dec_loss = vae_recon_loss
+
+        return vae_recon_loss, vae_kl_loss, vae_enc_loss, vae_dec_loss, vae_discrim_loss
     
     def concat_basis_bias(self, basis):
         # single vs. batch processing
@@ -262,9 +446,11 @@ class Train_PICD():
         training_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
                                         "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
                                         "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[]}
-        validation_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
-                                "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
-                                "diff_total":[], "diff_residual_loss":[]}
+        
+        validation_averages = {"vae_recon":[], "vae_kl":[], "diff_discrim":[], 
+                                "diff_discrim_weighted":[], "diff":[], 
+                                "diff_residual_loss_inf":[], "diff_res":[]}
+        
         # Iterate over the desired number of epochs
         for epoch in range(0, self.epochs):
             print("Starting Epoch: {:d}".format(epoch))
@@ -338,16 +524,31 @@ class Train_PICD():
                     ###
                     #  Perform least-sqaures approximation of ground-truth latents (Z^{T}) for diffusion training
                     ###
-                    # print("\tApproximating Z^0 via least-sqaures....")
-                    labels = data['output'].to(torch.float32).to(self.device)    # B x dim_y
-                    M_star_T = M_star.transpose(0,1)                             # dim_y x dim_a
-                    temp_1 = torch.mm(labels, M_star_T)                          # B x dim_a
-                    temp_2 = torch.inverse(torch.mm(M_star, M_star_T))           # dim_a x dim_a
-                    latents_T = torch.mm(temp_1, temp_2)                         # B x dim_a
+                    # 11/20/2024: Updated to use pre-trained RINA model instead of least-sqaures
+                    # # print("\tApproximating Z^0 via least-sqaures....")
+                    # labels = data['output'].to(torch.float32).to(self.device)    # B x dim_y
+                    # M_star_T = M_star.transpose(0,1)                             # dim_y x dim_a
+                    # temp_1 = torch.mm(labels, M_star_T)                          # B x dim_a
+                    # temp_2 = torch.inverse(torch.mm(M_star, M_star_T))           # dim_a x dim_a
+                    # latents_T = torch.mm(temp_1, temp_2)                         # B x dim_a
 
-                    # move temp values to cpu
-                    temp_1.cpu()
-                    temp_2.cpu()
+                    # # move temp values to cpu
+                    # temp_1.cpu()
+                    # temp_2.cpu()
+
+                    ###
+                    #  Use pretrained RINA model to create no-noise latent embeddings.... just like in Stable Diffusion paper
+                    ###
+                    inputs = data['input'].to(torch.float32).to(self.device)     # B x dim_x
+                    labels = data['output'].to(torch.float32).to(self.device)    # B x dim_y
+
+                    self.rina_model.to(self.device)
+                    self.rina_model.eval()
+                    latents_T = None
+                    
+                    with torch.no_grad():
+                        latents_T = self.rina_model(inputs)
+
                     # print("\tDone Approximating Z^0 via least-sqaures")
 
                     ###
@@ -367,8 +568,6 @@ class Train_PICD():
                     self.vae_decoder_optimizer.zero_grad()
                     self.vae_encoder_optimizer.zero_grad()
                     self.diffusion_optimizer.zero_grad()
-
-                    inputs = data['input'].to(torch.float32).to(self.device)     # B x dim_x
 
                     # encode the robot contexts
                     context, means, logvars = self.vae_encoder.encode(inputs)
@@ -423,7 +622,7 @@ class Train_PICD():
                     diff_discrim_loss = self.discrim_loss(discrim_preds, c_labels)
 
                     #    apply the PINN weight to the discriminator losses
-                    weighted_discrim_loss = pinn_weights * diff_discrim_loss
+                    weighted_discrim_loss = self.alpha * diff_discrim_loss
 
                     # Calculate Residual Targets
                     train_residuals = torch.mm(new_latents, M_star)
@@ -436,11 +635,14 @@ class Train_PICD():
                     diff_loss_total = torch.mean(diff_loss_total)
 
                     #    VAE losses
+                    vae_discrim_preds = self.vae_discrim(context)
+                    vae_discrim_loss = self.vae_discrim_loss(vae_discrim_preds, c_labels)
+                    
                     vae_recon_loss = self.vae_encoder.compute_vae_recon_loss(inputs, decoded_context)
                     vae_kl_loss = self.vae_kl_weight * self.vae_encoder.compute_kld_loss(means, logvars)
                     #    TODO: do we need to add weights to VAE components? probably need to scale the VAE losses down...
                     #    VAE losses ~10e5, diff-loss ~10e1....
-                    vae_enc_loss = vae_recon_loss + vae_kl_loss + diff_loss_total
+                    vae_enc_loss = vae_recon_loss + vae_kl_loss + diff_loss_total - self.alpha*vae_discrim_loss
                     vae_dec_loss = vae_recon_loss
 
                     #    TODO: Add PINN losses...
@@ -458,9 +660,10 @@ class Train_PICD():
                     # print("\tDone Training VAE and diffusion model")                
 
                     ###
-                    #   Train discriminator
+                    #   Train Diffusion model discriminator
                     ###
                     # print("\tTraining Discriminator Network....")
+                    discrim_loss = None
                     self.discriminator.train().to(self.device)
                     if np.random.rand() <= 1.0 / self.discrim_save_freq:
                         self.discriminator_optimizer.zero_grad()
@@ -494,6 +697,18 @@ class Train_PICD():
                         discrim_loss.backward()
                         self.discriminator_optimizer.step()
                         # print("\tDone Training Discriminator Network")
+                    
+                    # train VAE-discriminator
+                    vae_discrim_loss_dis = None
+                    if np.random.rand() <= 1.0 / self.discrim_save_freq:
+                        self.vae_discriminator_optimizer.zero_grad()
+                        temp, _, _ = self.vae_encoder.encode(inputs).detach()
+
+                        discrim_preds = self.vae_discrim(temp)
+                        vae_discrim_loss_dis = self.vae_discrim_loss(discrim_preds, c_labels)
+                        
+                        vae_discrim_loss_dis.backward()
+                        self.vae_discriminator_optimizer.step()
                     # end discriminator training statement
 
 
@@ -533,6 +748,8 @@ class Train_PICD():
                     self.diff_model.to(self.device)
                     self.discriminator_ema.to(self.device)
                     self.discriminator.to(self.device)
+                    self.vae_discrim.to(self.device)
+                    self.vae_discrim_ema.to(self.device)
                     decay = 0 if step < self.ema_warm_up else self.ema_decay
                     #     VAE
                     self.ema_accumulate(self.vae_encoder_ema, self.vae_encoder, decay)
@@ -540,9 +757,9 @@ class Train_PICD():
                     self.ema_accumulate(self.diff_model_ema, self.diff_model, decay)
                     #     discriminator
                     self.ema_accumulate(self.discriminator_ema, self.discriminator, decay)
+                    #     VAE - discriminator
+                    self.ema_accumulate(self.vae_discrim_ema, self.vae_discrim, decay)
                     # print("\tDone Performing EMA")
-
-                    # TODO: Need to perform Spectral Normalization on EMA model??
 
                     ###
                     #  Log BATCH-Wise training results to logger
@@ -571,7 +788,7 @@ class Train_PICD():
                     self.logger.add_scalar("train/step/vae_decoder",
                                             vae_dec_loss.item(),
                                             step)
-                    epoch_average_losses_train["vae_decoder"].append(vae_enc_loss.item())
+                    epoch_average_losses_train["vae_decoder"].append(vae_dec_loss.item())
                     #     Diff discrim loss
                     diff_discrim_loss = torch.mean(diff_discrim_loss)
                     self.logger.add_scalar("train/step/diff_discrim",
@@ -603,11 +820,12 @@ class Train_PICD():
                                             step)
                     epoch_average_losses_train["diff_total"].append(diff_loss_total.item())
                     #     discrim loss
-                    diff_loss_total = torch.mean(diff_loss_total)
-                    self.logger.add_scalar("train/step/discrim",
-                                            diff_loss_total.item(),
-                                            step)
-                    epoch_average_losses_train["discrim"].append(diff_loss_total.item())
+                    if discrim_loss is not None:
+                        discrim_loss = torch.mean(discrim_loss)
+                        self.logger.add_scalar("train/step/discrim",
+                                                discrim_loss.item(),
+                                                step)
+                        epoch_average_losses_train["discrim"].append(discrim_loss.item())
                     #     residual error loss
                     res_error = torch.mean(res_error)
                     self.logger.add_scalar("train/step/res_error",
@@ -701,13 +919,13 @@ class Train_PICD():
             #     residual error loss
             self.logger.add_scalar("train_epoch/res_error",
                                     np.mean(epoch_average_losses_train["res_error"]),
-                                    step)
+                                    epoch)
             training_averages["res_error"].extend(epoch_average_losses_train["res_error"])
             epoch_average_losses_train["res_error"] = []
             #     weighted residual error loss
             self.logger.add_scalar("train_epoch/res_error_w",
                                     np.mean(epoch_average_losses_train["res_error_w"]),
-                                    step)
+                                    epoch)
             training_averages["res_error_w"].extend(epoch_average_losses_train["res_error_w"])
             epoch_average_losses_train["res_error_w"] = []
     
@@ -720,92 +938,60 @@ class Train_PICD():
             #                     "diff_total":[], "diff_residual_loss":[]}
             val_vae_recon = []
             val_vae_kl = []
-            # val_vae_enc = []
-            # val_vae_dec = []
             val_diff = []
-            # val_diff_w = []
-            # val_diff_total = []
-            # val_diff_dis = []
-            # val_diff_dis_w = []
+            val_res_err = []
             val_diff_res = []
+            val_discrim = []
             with torch.no_grad():
                 for j in range(len(self.TestData)):
                     input, output, condition = self.TestData[j].X, self.TestData[j].Y, self.TestData[j].C
-                    val_vae_recon_loss, vae_kl_loss, val_diff_loss, diff_residual_pred_loss = self.validation(input, output, condition)
+                    # vae_recon_loss, vae_kl_loss, diff_loss, diff_discrim_loss, res_error, diff_residual_pred_loss
+                    val_vae_recon_loss, vae_kl_loss, val_diff_loss, val_discrim_loss, val_res_error, val_diff_inf_error = self.validation(input, output, condition)
                     
                     val_vae_recon.append(val_vae_recon_loss.item())
                     val_vae_kl.append(vae_kl_loss.item())
-                    # val_vae_dec.append(val_vae_enc_loss.item())
-                    # val_vae_enc.append(val_vae_dec_loss.item())
                     val_diff.append(val_diff_loss.item())
-                    # val_diff_w.append(val_weighted_diff_loss.item())
-                    # val_diff_total.append(val_diff_loss_total.item())
-                    # val_diff_dis.append(val_diff_discrim_loss.item())
-                    # val_diff_dis_w.append(val_weighted_discrim_loss.item())
-                    val_diff_res.append(diff_residual_pred_loss.item())
+                    val_res_err.append(val_res_error.item())
+                    val_diff_res.append(val_diff_inf_error.item())
+                    val_discrim.append(val_discrim_loss.item())
                     
                 val_vae_recon = np.mean(val_vae_recon)
                 val_vae_kl = np.mean(val_vae_kl)
-                # val_vae_dec = np.mean(val_vae_dec)
-                # val_vae_enc = np.mean(val_vae_enc)
                 val_diff = np.mean(val_diff)
-                # val_diff_w = np.mean(val_diff_w)
-                # val_diff_total = np.mean(val_diff_total)
-                # val_diff_dis = np.mean(val_diff_dis)
-                # val_diff_dis_w = np.mean(val_diff_dis_w)
                 val_diff_res = np.mean(val_diff_res)
+                val_res_err = np.mean(val_res_err)
+                val_discrim = np.mean(val_discrim)
+
 
                 # validation_averages
                 #    VAE recon loss
                 self.logger.add_scalar("val/vae_recon",
                                         val_vae_recon,
-                                        step)
+                                        epoch)
                 validation_averages["vae_recon"].append(val_vae_recon)
                 #    VAE KL loss
                 self.logger.add_scalar("val/vae_kl",
                                         val_vae_kl,
-                                        step)
+                                        epoch)
                 validation_averages["vae_kl"].append(val_vae_kl)
-                # #    val_vae_enc_loss loss
-                # self.logger.add_scalar("val/vae_encoder",
-                #                         val_vae_enc,
-                #                         step)
-                # validation_averages["vae_encoder"].append(val_vae_enc)
-                # #    val_vae_dec_loss loss
-                # self.logger.add_scalar("val/vae_decoder",
-                #                         val_vae_dec,
-                #                         step)
-                # validation_averages["vae_decoder"].append(val_vae_dec)
                 #    val_diff_loss loss
                 self.logger.add_scalar("val/diff",
                                         val_diff,
-                                        step)
+                                        epoch)
                 validation_averages["diff"].append(val_diff)
-                #    val_weighted_diff_loss loss
-                # self.logger.add_scalar("val/diff_weighted",
-                #                         val_diff_w,
-                #                         step)
-                # validation_averages["diff_weighted"].append(val_diff_w)
-                # #    val_diff_discrim_loss loss
-                # self.logger.add_scalar("val/diff_discrim",
-                #                         val_diff_dis,
-                #                         step)
-                # validation_averages["diff_discrim"].append(val_diff_dis)
-                # #    val_weighted_discrim_loss loss
-                # self.logger.add_scalar("val/diff_discrim_weighted",
-                #                         val_diff_dis_w,
-                #                         step)
-                # validation_averages["diff_discrim_weighted"].append(val_diff_dis_w)
-                # #    val_weighted_discrim_loss loss
-                # self.logger.add_scalar("val/diff_total",
-                #                         val_diff_total,
-                #                         step)
-                # validation_averages["diff_total"].append(val_diff_total)
                 #    diff_residual_pred_loss loss
-                self.logger.add_scalar("val/diff_residual_loss",
+                self.logger.add_scalar("val/diff_residual_loss_inf",
                                         val_diff_res,
-                                        step)
-                validation_averages["diff_residual_loss"].append(val_diff_res)
+                                        epoch)
+                validation_averages["diff_residual_loss_inf"].append(val_diff_res)
+                self.logger.add_scalar("val/diff_discrim",
+                                       val_discrim,
+                                       epoch)
+                validation_averages["diff_discrim"].append(val_discrim)
+                self.logger.add_scalar("val/diff_res",
+                                       val_res_err,
+                                       epoch)
+                validation_averages["diff_res"].append(val_res_err)
 
             
             # Update the tensorboard weight histograms
@@ -878,17 +1064,31 @@ class Train_PICD():
         M.cpu()
         # print("\tDone Adapting M parameters")
 
-        # Calculate Z^T on test batch
-        # print("\tValidation - Approximating Z^0 via least-sqaures....")
-        labels = torch.from_numpy(trainset['output']).to(torch.float32).to(self.device)    # B x dim_y
-        M_star_T = M_star.transpose(0,1)                             # dim_y x dim_a
-        temp_1 = torch.mm(labels, M_star_T)                          # B x dim_a
-        temp_2 = torch.inverse(torch.mm(M_star, M_star_T))           # dim_a x dim_a
-        latents_T = torch.mm(temp_1, temp_2)                         # B x dim_a
+        # # Calculate Z^T on test batch
+        # # print("\tValidation - Approximating Z^0 via least-sqaures....")
+        # labels = torch.from_numpy(trainset['output']).to(torch.float32).to(self.device)    # B x dim_y
+        # M_star_T = M_star.transpose(0,1)                             # dim_y x dim_a
+        # temp_1 = torch.mm(labels, M_star_T)                          # B x dim_a
+        # temp_2 = torch.inverse(torch.mm(M_star, M_star_T))           # dim_a x dim_a
+        # latents_T = torch.mm(temp_1, temp_2)                         # B x dim_a
 
-        # move temp values to cpu
-        temp_1.cpu()
-        temp_2.cpu()
+        # # move temp values to cpu
+        # temp_1.cpu()
+        # temp_2.cpu()
+
+        ###
+        #  Use pretrained RINA model to create no-noise latent embeddings.... just like in Stable Diffusion paper
+        ###
+        inputs = torch.from_numpy(trainset['input']).to(torch.float32).to(self.device)      # B x dim_x
+        labels = torch.from_numpy(trainset['output']).to(torch.float32).to(self.device)     # B x dim_y
+
+        self.rina_model.to(self.device)
+        self.rina_model.eval()
+        latents_T = None
+        
+        with torch.no_grad():
+            latents_T = self.rina_model(inputs)
+
         # print("\tValidation - Done Approximating Z^0 via least-sqaures")
 
         # print("\tValidation - Testing VAE and Diffusion Model....")
@@ -900,8 +1100,6 @@ class Train_PICD():
         self.vae_encoder_ema.to(self.device)
         self.diff_model_ema.to(self.device)
         self.discriminator_ema.to(self.device)
-
-        inputs = torch.from_numpy(trainset['input']).to(torch.float32).to(self.device)     # B x dim_x
         
         # Encode / Decode context
         # encode the robot contexts
@@ -925,61 +1123,36 @@ class Train_PICD():
         diff_loss = self.diff_loss(e_hat, noise)
         diff_loss = torch.mean(diff_loss, dim=1)
 
-        # #    weight the losses via minSNR ratio
-        # snr_weights = torch.ones((inputs.shape[0], 1), dtype=inputs.dtype, device=self.device)
-        # for idx, t in enumerate(ts):
-        #     snr_weights[idx] = self.scheduler.get_minSNR_weight(t)
+        new_latents = []
+        for idx, t in enumerate(ts):
+            # pull out the scheduler params
+            alpha_bar_t = self.scheduler.get_alpha_bar(t)
+            # calcualte the completely denoised latent using the predicted e_hat 
+            new_latent = self.diff_model_ema.get_pred_denoised_latent_no_forward(e_hat[idx], noisy_latents[idx], alpha_bar_t)
+            new_latents.append(new_latent)
 
-        # # print(snr_weights)
-        # weighted_diff_loss = snr_weights * diff_loss
+        new_latents = torch.stack(new_latents, dim=0)
 
-        # #    diffusion latent discriminator losses
-        # #        next the denoised latents
-        # new_latents = []
-        # pinn_weights = []
-        # for idx, t in enumerate(ts):
-        #     # pull out the scheduler params
-        #     alpha_bar_t = self.scheduler.get_alpha_bar(t)
-        #     # calcualte the completely denoised latent using the predicted e_hat 
-        #     new_latent = self.diff_model_ema.get_pred_denoised_latent_no_forward(e_hat[idx], noisy_latents[idx], alpha_bar_t)
-        #     new_latents.append(new_latent)
+        # get the discriminator's predictions
+        # c_labels = torch.from_numpy(trainset['c']).type(torch.long).to(self.device)
+        c_labels = torch.zeros((new_latents.shape[0], self.num_test_classes))
+        for k in range(new_latents.shape[0]):
+            c_labels[k][trainset['c']] = 1
+        c_labels = c_labels.type(torch.float32).to(self.device)
+        discrim_preds = self.discriminator_ema(new_latents)
+        diff_discrim_loss = self.discrim_loss(discrim_preds, c_labels)
 
-        #     # pull out the PINN loss weights (used in multiple places...)
-        #     # print(self.scheduler.get_pinn_weight(t))
-        #     pinn_weights.append(self.scheduler.get_pinn_weight(t))
-
-        # new_latents = torch.stack(new_latents, dim=0)
-        # pinn_weights = torch.stack(pinn_weights, dim=0).to(self.device)
-
-        # # get the discriminator's predictions
-        # # c_labels = torch.from_numpy(trainset['c']).type(torch.long).to(self.device)
-        # c_labels = torch.zeros((new_latents.shape[0], self.num_test_classes))
-        # for k in range(new_latents.shape[0]):
-        #     c_labels[k][trainset['c']] = 1
-        # c_labels = c_labels.type(torch.float32).to(self.device)
-        # discrim_preds = self.discriminator_ema(new_latents)
-        # diff_discrim_loss = self.discrim_loss(discrim_preds, c_labels)
-
-        # #    apply the PINN weight to the discriminator losses
-        # weighted_discrim_loss = pinn_weights * diff_discrim_loss
-
-        # # calculate the total doiffusion model loss (diffusion model loss and discriminator regularization)
-        # #  
-        # diff_loss_total = weighted_diff_loss - weighted_discrim_loss
-        # diff_loss_total = torch.mean(diff_loss_total)
+        # Calculate Residual Targets
+        train_residuals = torch.mm(new_latents, M_star)
+        res_error = torch.mean(F.mse_loss(train_residuals, labels, reduction='none'), dim=1)
 
         #    VAE losses
         vae_recon_loss = self.vae_encoder_ema.compute_vae_recon_loss(inputs, decoded_context)
         vae_kl_loss = self.vae_kl_weight * self.vae_encoder_ema.compute_kld_loss(means, logvars)
-        #    TODO: do we need to add weights to VAE components? probably need to scale the VAE losses down...
-        #    VAE losses ~10e5, diff-loss ~10e1....
-        # vae_enc_loss = vae_recon_loss + vae_kl_loss + diff_loss_total
-        # vae_dec_loss = vae_recon_loss
 
         diff_loss = torch.mean(diff_loss)
-        # weighted_diff_loss = torch.mean(weighted_diff_loss)
-        # diff_discrim_loss = torch.mean(diff_discrim_loss)
-        # weighted_discrim_loss = torch.mean(weighted_discrim_loss)
+        diff_discrim_loss = torch.mean(diff_discrim_loss)
+        res_error = torch.mean(res_error)
 
         # perform inference denosing on test validation data
         #    calcualted residual dynamics using M_Star
@@ -987,8 +1160,9 @@ class Train_PICD():
         denoised_latents = self.inference_denoise_loop(inputs, context, self.diff_model_ema)
         residual_preds = torch.mm(denoised_latents, M_star)
 
-        diff_residual_pred_loss = F.mse_loss(residual_preds, labels)
+        diff_residual_pred_loss = torch.mean(F.mse_loss(residual_preds, labels, reduction='none'), dim=1)
+        diff_residual_pred_loss = torch.mean(diff_residual_pred_loss)
 
-        return vae_recon_loss, vae_kl_loss, diff_loss, diff_residual_pred_loss
+        return vae_recon_loss, vae_kl_loss, diff_loss, diff_discrim_loss, res_error, diff_residual_pred_loss
 
 

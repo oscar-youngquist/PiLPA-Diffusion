@@ -136,11 +136,14 @@ def format_data(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = 
         # Create input array
         X = []
         for feature in features:
-            # print(feature)
-            # add the body offset to grab just the leg-data
-            X.append(data[feature])
-            # print(len(data[feature][0]))
-            feature_len[feature] = len(data[feature][0])
+            try:
+                feature_len[feature] = len(data[feature][0])
+                X.append(data[feature])
+            except:
+                feature_len[feature] = 1
+                print(data[feature][:,np.newaxis].shape)
+                X.append(data[feature][:,np.newaxis])
+
         X = np.hstack(X)
 
         # print(X.shape)

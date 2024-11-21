@@ -2,6 +2,25 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+
+# Cross-entropy loss
+class VAE_Discriminator(nn.Module):
+    def __init__(self, options):
+        super(VAE_Discriminator, self).__init__()
+        self.fc1 = nn.Linear(options['context_size'], options['vae_discrim_h1'])
+        self.output = nn.Linear(options['vae_discrim_h1'], options['num_c'])
+
+        # init the weights using xavier-intialization
+        torch.nn.init.xavier_uniform_(self.fc1.weight)
+        torch.nn.init.xavier_uniform_(self.output.weight)
+        
+    def forward(self, x):
+        x = self.fc1(x)
+        x = F.silu(x)
+        x = self.output(x)
+        return x
+
+
 # Classes used to encode current robot state and velocity commands into a conditioning value for conditional diffusion
 class VAE_Context_Encoder(nn.Module):
     def __init__(self, options):
@@ -25,6 +44,9 @@ class VAE_Context_Encoder(nn.Module):
 
         # leayer normalization before the mu and sigma layers
         self.layer_norm = nn.LayerNorm(options["enc_hidden_2_out"])
+
+        # inout layer norm layer
+        self.input_norm = nn.LayerNorm(options['dim_x'])
 
         # init the weights using xavier-intialization
         torch.nn.init.xavier_uniform_(self.input_layer.weight)
@@ -53,6 +75,7 @@ class VAE_Context_Encoder(nn.Module):
         return x, mean, logvar
     
     def forward(self, x):
+        x = self.input_norm(x)
         #(Batch_Size, options["dim_x"]) -> (Batch_Size, options["enc_hidden_1_in"])
         x = self.input_layer(x)
         x = self.dropout_in(x)

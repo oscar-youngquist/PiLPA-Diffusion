@@ -24,6 +24,10 @@ class DDPM:
         self.one = torch.tensor(1.0)
         self.timesteps = torch.from_numpy(np.arange(0, self.num_training_steps)[::-1].copy())
 
+        print(self.betas)
+        print(self.alphas)
+        print(self.alpha_bars)
+
         # print("Training Time-Steps: ", self.timesteps)
 
         # Calculate the noise-error loss term weight based on the Signal-to-Noise Ratio (SNR) https://arxiv.org/pdf/2303.09556.pdf

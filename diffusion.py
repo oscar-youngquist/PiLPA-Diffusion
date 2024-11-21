@@ -58,6 +58,12 @@ class UNet(nn.Module):
         self.skip_2_norm = nn.LayerNorm(options["diff_out_2"])
         self.skip_1_norm = nn.LayerNorm(options["diff_out_1"])
 
+        self.b1_dropout = nn.Dropout(options["dropout"])
+        self.b2_dropout = nn.Dropout(options["dropout"])
+        self.b3_dropout = nn.Dropout(options["dropout"])
+        self.b4_dropout = nn.Dropout(options["dropout"])
+        self.bottle_neck_dropout = nn.Dropout(options["dropout"])
+
         # init some weights using xavier-intialization
         torch.nn.init.xavier_uniform_(self.bottle_neck_layer.weight)
 
@@ -70,6 +76,7 @@ class UNet(nn.Module):
         # (Batch_Size, options["dim_a"]) (Batch_Size, options["time_size"]) 
         #       -> (Batch_Size, options["diff_out_1"])
         x = self.input_block(x, time)
+        x = self.b1_dropout(x)
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["context_size"]) 
         #       -> (Batch_Size, options["diff_out_1"])
         x = self.attention_1(x, context)
@@ -78,6 +85,7 @@ class UNet(nn.Module):
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["time_size"]) 
         #       -> (Batch_Size, options["diff_out_2"])
         x = self.block_2(x, time)
+        x = self.b2_dropout(x)
         # (Batch_Size, options["diff_out_2"]) (Batch_Size, options["context_size"]) 
         #       -> (Batch_Size, options["diff_out_2"])
         x = self.attention_2(x, context)
@@ -89,6 +97,7 @@ class UNet(nn.Module):
         x = self.bottle_neck_norm(x)
         x = F.silu(x)
         x = self.bottle_neck_layer(x)
+        x = self.bottle_neck_dropout(x)
 
         # up-sample blocks
         #     add skip-connection -> normalize -> activation function -> weights
@@ -100,6 +109,7 @@ class UNet(nn.Module):
         # (Batch_Size, options["diff_out_2"]) (Batch_Size, options["time_size"]) 
         #       -> (Batch_Size, options["diff_out_1"])
         x = self.block_3(x, time)
+        x = self.b3_dropout(x)
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["context_size"]) 
         #       -> (Batch_Size, options["diff_out_1"])
         x = self.attention_3(x, context)
@@ -111,6 +121,7 @@ class UNet(nn.Module):
         # (Batch_Size, options["diff_out_1"]) (Batch_Size, options["time_size"]) 
         #       -> (Batch_Size, options["dim_a"])
         x = self.output_block(x, time)
+        x = self.b4_dropout(x)
         # (Batch_Size, options["dim_a"]) (Batch_Size, options["context_size"]) 
         #       -> (Batch_Size, options["dim_a"])
         x = self.attention_4(x, context)

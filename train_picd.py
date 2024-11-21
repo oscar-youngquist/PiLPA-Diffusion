@@ -19,6 +19,10 @@ def run_training_loop(options):
     # save out the config path
     model_trainer.save_config(config_output_path)
 
+    # pretrain the VAE encoder 
+    if options["vae_warm_up"] > 0:
+        model_trainer.pretrain_vae_encoder()
+
     # train the model
     model_trainer.train_model()
     
@@ -62,10 +66,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PiCD")
     
     parser.add_argument('--train-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/training_data_cse_small/', 
+                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/training_data/', 
                         help='Path to training data')
     parser.add_argument('--test-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/eval_data_cse/', 
+                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/eval_data/', 
                         help='Path to eval data')
 
     # parser.add_argument('--train-path', type=str, 
@@ -82,10 +86,15 @@ if __name__ == '__main__':
     parser.add_argument('--model-save-freq', type=int, default=50, help='Number of epochs between model saves (default: 100)')
     parser.add_argument('--SN', type=float, default=6.0, help='Max single-layer spectural norm (default: 6.0)')
     parser.add_argument('--gamma', type=float, default=10, help='Max magnitude of a (default: 10.0)')
+    parser.add_argument('--alpha', type=float, default=0.1, help='Relative weight of discriminator loss (default: 0.1)')
     parser.add_argument('--frequency-h', type=float, default=2.0, help='Phi/Dis. update ratio (default: 2.0)')
     parser.add_argument('--K-shot', type=int, default=256, help='Hidden layer size for discriminator (default: 64)')
     parser.add_argument('--phi-shot', type=int, default=512, help='Training batch-size (default: 64)')
     parser.add_argument('--device', type=str, default='cuda:0', help='Training device (default: cuda:0)')
+
+    parser.add_argument('--phi-first-out', type=int, default=100, help='First/Third layer size (default: 100)')
+    parser.add_argument('--phi-second-out', type=int, default=128, help='Second layer size (default: 128)')
+    parser.add_argument('--rina-model-path', type=str, default='/home/oyoungquist/Research/RINA/rina/training_results/PiLPA/11_17_202417_57_23_cmd_res_cc_100_128_a16_h40_e15000/models/rina_dim-a-16_torso_behavior_cmds-body_height-body_rpy-q-body_velo-body_ang_velo-q_dot-tau_cmd-epoch-15000')
 
     # binary decisions
     parser.add_argument('--shuffle', action="store_true", help='Shuffle training data (default: True)')
@@ -101,36 +110,38 @@ if __name__ == '__main__':
     # Diffusion / Model Parameters
     #     VAE encoder/decoder
     parser.add_argument('--context-size', type=int, default=12, help='Size of VAE robot-state context vector (default: 10)')
-    parser.add_argument('--enc-hidden-1-in', type=int, default=40, help='Input size of first hidden layer for VAE encoder (default: 52)')
-    parser.add_argument('--enc-hidden-2-in', type=int, default=27, help='Output size of first hidden layer for VAE encoder (default: 36)')
-    parser.add_argument('--enc-hidden-2-out', type=int, default=14, help='Output size of second hidden layer for VAE encoder (default: 18)')
+    parser.add_argument('--enc-hidden-1-in', type=int, default=52, help='Input size of first hidden layer for VAE encoder (default: 52)')
+    parser.add_argument('--enc-hidden-2-in', type=int, default=36, help='Output size of first hidden layer for VAE encoder (default: 36)')
+    parser.add_argument('--enc-hidden-2-out', type=int, default=18, help='Output size of second hidden layer for VAE encoder (default: 18)')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout probability (default: 0.1 - 10\%)')
-    parser.add_argument('--dec-hidden-1-in', type=int, default=14, help='Input size of first hidden layer for VAE decoder (default: 18)')
-    parser.add_argument('--dec-hidden-2-in', type=int, default=27, help='Output size of first hidden layer for VAE decoder (default: 36)')
-    parser.add_argument('--dec-hidden-2-out', type=int, default=40, help='Output size of second hidden layer for VAE decoder (default: 52)')
+    parser.add_argument('--dec-hidden-1-in', type=int, default=18, help='Input size of first hidden layer for VAE decoder (default: 18)')
+    parser.add_argument('--dec-hidden-2-in', type=int, default=36, help='Output size of first hidden layer for VAE decoder (default: 36)')
+    parser.add_argument('--dec-hidden-2-out', type=int, default=52, help='Output size of second hidden layer for VAE decoder (default: 52)')
+    parser.add_argument('--vae-discrim-h1', type=int, default=40, help='First hidden layer size for VAE discriminator (default: 40)')
+
 
     #    Diffusion model parameters
-    parser.add_argument('--discrim-h1', type=int, default=80, help='First hidden layer size for discriminator (default: 40)')
-    parser.add_argument('--discrim-h2', type=int, default=40, help='First hidden layer size for discriminator (default: 20)')
+    parser.add_argument('--discrim-h1', type=int, default=100, help='First hidden layer size for discriminator (default: 40)')
+    parser.add_argument('--discrim-h2', type=int, default=60, help='First hidden layer size for discriminator (default: 20)')
     parser.add_argument('--time-size', type=int, default=12, help='Size of the timestep embedding (default: 10)')
     parser.add_argument('--diff-out-1', type=int, default=14, help='First hidden layer size for diffusion UNet (default: 10)')
     parser.add_argument('--diff-out-2', type=int, default=12, help='Second hidden layer size for  diffusion UNet (default: 8)')
     parser.add_argument('--dim-a', type=int, default=16, help='Number of basis-functions (defaut: 12)')
     parser.add_argument('--n-heads', type=int, default=2, help='Number of attention head in diff. UNet context conditioning layers (default: 2)')
 
-    parser.add_argument('--kl-weight', type=float, default=0.001, help='Maximum SNR weight value (default: 5.0)')
+    parser.add_argument('--kl-weight', type=float, default=0.0001, help='Maximum SNR weight value (default: 5.0)')
     # PINN loss fixed noise covaraiance scale factor https://arxiv.org/pdf/2403.14404
-    parser.add_argument('--res-weight', type=float, default=0.00001, help='PINN loss weigth scale factor (default: 0.01)')
+    parser.add_argument('--res-weight', type=float, default=0.1, help='PINN loss weigth scale factor (default: 0.01)')
 
     #    Diffusion scheduler parameters
-    parser.add_argument('--num-training-steps', type=int, default=50, help='Number of training steps for the diffusion model (default: 50)')
+    parser.add_argument('--num-training-steps', type=int, default=10, help='Number of training steps for the diffusion model (default: 50)')
     parser.add_argument('--num-inference-steps', type=int, default=5, help='Number of inference steps for the diffusion model (default: 5)')
     parser.add_argument('--schedule-type', type=str, default='cosine', help='Type of beta schedule for diffusion model (default: \'cosine\')')
     # Params "beta_start" and "beta_end" taken from: https://github.com/CompVis/stable-diffusion/blob/21f890f9da3cfbeaba8e2ac3c425ee9e998d5229/configs/stable-diffusion/v1-inference.yaml#L5C8-L5C8
     parser.add_argument('--beta-start', type=float, default=0.00085, help='Beta starting value (default: 0.00085)')
     parser.add_argument('--beta-end', type=float, default=0.0120, help='Beta end value (default: 0.0120)')
     # values taken from https://arxiv.org/pdf/2303.09556.pdf
-    parser.add_argument('--snr-min-value', type=float, default=5.0, help='Maximum SNR weight value (default: 5.0)')
+    parser.add_argument('--snr-min-value', type=float, default=2.0, help='Maximum SNR weight value (default: 5.0)')
     # PINN loss fixed noise covaraiance scale factor https://arxiv.org/pdf/2403.14404
     parser.add_argument('--covar-scale', type=float, default=0.01, help='PINN loss weigth scale factor (default: 0.01)')
 
@@ -139,13 +150,13 @@ if __name__ == '__main__':
     parser.add_argument('--model-name', type=str, help='Name used to create experiment folder (default: None)')
     parser.add_argument('--exp-name', type=str, help='Name used to create experiment folder (default: None)')
     parser.add_argument('--vae-warm-up', type=int, default=0, help='Number of epochs to train the VAE before diffusion training (default: 0)')
-    parser.add_argument('--ema-warm-up', type=int, default=10, help='Number of warm up EMA training (default: 10)')
+    parser.add_argument('--ema-warm-up', type=int, default=50, help='Number of warm up EMA training (default: 10)')
     parser.add_argument('--ema-decay', type=float, default=0.9999, help='Decay rate for EMA training (default: 0.9999)')
 
 
     # ['body_rp','q','body_rp_dot','q_dot','fr_contact','tau_cmd']
     parser.add_argument('--features', nargs="+", type=str, 
-                        default=['body_rpy', 'q', 'body_velo', 'body_ang_velo', 'q_dot','tau_cmd'], 
+                        default=['torso_behavior_cmds', 'body_height', 'body_rpy', 'q', 'body_velo', 'body_ang_velo', 'q_dot','tau_cmd'], 
                         help='Values used an input data (default: [body_rpy,q,body_velo,body_ang_velo,q_dot,tau_cmd])')
     parser.add_argument('--label', type=str, default='tau_residual_cmd_cs', help='Name of training lable (target)')
     parser.add_argument('--output-prefix', type=str, default='', help='Prefix for output folder (default: '')')
@@ -156,8 +167,8 @@ if __name__ == '__main__':
     options = {}
 
     # # fill in the default values...
-    options["dim_a"]           = 12
-    options["features"]        = ['body_rpy', 'q', 'body_velo', 'body_ang_velo', 'q_dot','tau_cmd']
+    options["dim_a"]           = 16
+    options["features"]        = ['torso_behavior_cmds', 'body_height', 'body_rpy', 'q', 'body_velo', 'body_ang_velo', 'q_dot','tau_cmd']
     options["label"]           = 'tau_residual_cmd_cs'
     options["labels"]          = ["FR_hip", "FR_knee", "FR_foot", "FL_hip", "FL_knee", "FL_foot",
                                   "RR_hip", "RR_knee", "RR_foot", "RL_hip", "RL_knee", "RL_foot"]
@@ -198,9 +209,6 @@ if __name__ == '__main__':
     run_training_loop(options)
 
 
-# body_rp q body_rp_dot q_dot fr_contact tau_cmd
-
-
-# python3 train_rina.py --output-prefix cmd_residual_cs_update/corrected/extended_state --num-epochs 15000 --label tau_residual_cmd_cs --discrim-hidden 40 --phi-first-out 100 --phi-second-out 128  --device cuda:0 --phi-shot 2048 --K-shot 1024 --features body_rpy q body_velo body_ang_velo q_dot tau_cmd --no-save-data-plots --learning-rate 0.00069 --alpha 0.1 --dim-a 16 --SN 6 --gamma 10
-
 # python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 1
+
+# python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100 --dropout 0.3 --learning-rate 0.00001 --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --kl-weight 0.0001 --res-weight 0.1 --ema-decay 0

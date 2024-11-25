@@ -35,6 +35,9 @@ class WholeBody_PINN_Loss():
         # used for all calculations
         latent_T = latents.transpose(0,1)                                        # dim_a x K
         M = torch.inverse(torch.mm(latent_T, latents))                           # dim_a x dim_a
+
+        # extract just the height, roll, pitch, and yaw
+        position_torso = position_torso[:,[2,3,4,5]]
         
         # Update matrix for torso position (height, roll, pitch, yaw) 
         self.mixing_torso_pos = torch.mm(torch.mm(M, latent_T), position_torso)  # dim_a x 4

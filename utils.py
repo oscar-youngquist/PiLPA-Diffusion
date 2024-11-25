@@ -58,6 +58,133 @@ def load_models(model_path):
 
     return vae_encoder, diff, discrim, vae_encoder_ema, diff_ema, discrim_ema
 
+
+class MyDatasetPINN(Dataset):
+
+    def __init__(self, inputs, outputs, c, torso_pose_shifted, torso_velo_shifted, q_shifted, tau_shifted, fr_tau_shifted):
+        self.inputs = inputs
+        self.outputs = outputs
+        self.c = c
+        self.torso_poses = torso_pose_shifted
+        self.torso_velo = torso_velo_shifted
+        self.q_shifted = q_shifted
+        self.tau_shifted = tau_shifted
+        self.fr_tau = fr_tau_shifted
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        Input = self.inputs[idx,]
+        output = self.outputs[idx,]
+        torso_pose = self.torso_poses[idx,]
+        torso_velo = self.torso_velo[idx,]
+        q_shift = self.q_shifted[idx,]
+        tau_shift = self.tau_shifted[idx,]
+        fr_tau = self.fr_tau[idx,]
+        sample = {'input': Input, 'output': output, 'c': self.c, 
+                  'torso_pose':torso_pose, 'torso_velo':torso_velo, 
+                  'q_shift':q_shift, 'tau_shift':tau_shift,
+                  'fr_tau':fr_tau}
+
+        return sample
+
+def load_data_pinn(folder : str, expnames = None) -> List[dict]:
+    ''' Loads csv files from {folder} and return as list of dictionaries of ndarrays '''
+    Data = []
+
+    if expnames is None:
+        filenames = os.listdir(folder)
+        # print(filenames)
+    elif isinstance(expnames, str): # if expnames is a string treat it as a regex expression
+        filenames = []
+        for filename in os.listdir(folder):
+            if re.search(expnames, filename) is not None:
+                filenames.append(filename)
+    elif isinstance(expnames, list):
+        filenames = (expname + '.csv' for expname in expnames)
+    else:
+        raise NotImplementedError()
+    for filename in filenames:
+        # Ingore not csv files, assume csv files are in the right format
+        if not filename.endswith('.csv'):
+            continue
+
+        # Load the csv using a pandas.DataFrame
+        df = pd.read_csv(folder + '/' + filename)
+        
+        # print(df.columns)
+
+        # Lists are loaded as strings by default, convert them back to lists
+        for field in df.columns[1:]:
+            if isinstance(df[field][0], str):
+                df[field] = df[field].apply(literal_eval)
+
+        # Copy all the data to a dictionary, and make things np.ndarrays
+        Data.append({})
+        for field in df.columns[1:]:
+            Data[-1][field] = np.array(df[field].tolist(), dtype=float)
+
+        # Add in some metadata from the filename
+        namesplit = filename.split('.')[0]
+        for i, field in enumerate(filename_fields):
+            Data[-1][field] = namesplit
+        # Data[-1]['method'] = namesplit[0]
+        # Data[-1]['condition'] = namesplit[1]
+
+    return Data
+
+
+SubDatasetPINN = namedtuple('SubDataset', 'X Y C T_Pose T_Velo QS TS FRS meta')
+feature_len = {}
+
+def format_data_pinn(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = ['v', 'q', 'pwm'], output: str = 'fa', body_offset = 6, ):
+    Data = []
+    for i, data in enumerate(RawData):
+        # Create input array
+        X = []
+        for feature in features:
+            try:
+                feature_len[feature] = len(data[feature][0])
+                X.append(data[feature])
+            except:
+                feature_len[feature] = 1
+                print(data[feature][:,np.newaxis].shape)
+                X.append(data[feature][:,np.newaxis])
+
+        X = np.hstack(X)
+
+        # print(X.shape)
+
+        # Create label array
+        Y = []
+        for _label in data[output]:
+            Y.append(_label[body_offset:])
+        
+        Y = np.array(Y)
+
+        # print(Y.shape)
+
+        # create array of next-time step PINN loss data
+        # torso_pose_shifted, torso_velo_shifted, q_shifted, tau_shifted, fr_tau_shifted
+        T_Pose = data['torso_pose_shifted']
+        T_Velo = data['torso_velo_shifted']
+        QS = data['q_shifted']
+        TS = data['tau_cmd_shifted']
+        FRS = data['fr_tau_shifted']
+
+        # Pseudo-label for cross-entropy
+        C = i
+
+        # print(data['condition'])
+
+        # Save to dataset
+        Data.append(SubDataset(X, Y, C, T_Pose, T_Velo, QS, TS, FRS, {'condition': data['condition'], 'steps': data['steps']}))
+
+    return Data
+
+
+
 class MyDataset(Dataset):
 
     def __init__(self, inputs, outputs, c):

@@ -483,6 +483,7 @@ class Train_PICD():
                     latent_T = latent.transpose(0,1)                                 # dim_a x K
                     M = torch.inverse(torch.mm(latent_T, latent))                    # dim_a x dim_a
                     M_star = torch.mm(torch.mm(M, latent_T), Y_kshot)                # dim_a x dim_y
+
                     #     normalize mixing coefficents 
                     if torch.norm(M_star, 'fro') > self.gamma:
                         M_star = M_star / torch.norm(M_star, 'fro') * self.gamma

@@ -353,7 +353,6 @@ class Train_PICD():
 
             print("End VAE Warmup Epoch: {:d}".format(warm_up_epoch))               
 
-
     def pretrain_vae_validate(self, input, labels, C):
         # fullset = utils.MyDataset(input, labels, C)
         # inputs = torch.from_numpy(fullset['input']).to(torch.float32).to(self.device)     # K x dim_x

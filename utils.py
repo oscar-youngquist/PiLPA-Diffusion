@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from vae_context_encoder_models import VAE_Conditioning_Model
 from diffusion import Diffusion, Discriminator
+import math 
 
 folder = './data/experiment'
 filename_fields = ['condition']
@@ -157,6 +158,8 @@ def format_data(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = 
 
         # print(Y.shape)
 
+        # create array of next-time step PINN loss data
+
         # Pseudo-label for cross-entropy
         C = i
 
@@ -166,6 +169,33 @@ def format_data(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = 
         Data.append(SubDataset(X, Y, C, {'condition': data['condition'], 'steps': data['steps']}))
 
     return Data
+
+def euler_to_quaternion(roll, pitch, yaw):
+    """
+    Convert roll, pitch, and yaw angles to a quaternion.
+
+    Args:
+        roll (float): Roll angle in radians.
+        pitch (float): Pitch angle in radians.
+        yaw (float): Yaw angle in radians.
+
+    Returns:
+        tuple: Quaternion (w, x, y, z)
+    """
+
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
+
+    w = cy * cp * cr + sy * sp * sr
+    x = cy * cp * sr - sy * sp * cr
+    y = sy * cp * sr + cy * sp * cr
+    z = sy * cp * cr - cy * sp * sr
+
+    return [w, x, y, z]
 
 def plot_subdataset(data, features, labels, output_path, title_prefix=''):
     fig, axs = plt.subplots(4, len(features)+1, figsize=(10,10))

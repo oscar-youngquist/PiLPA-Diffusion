@@ -30,23 +30,23 @@ class WholeBody_PINN_Loss():
         # q-state        --> leg joint positions (12)
 
         # used for all calculations
-        latent_T = latents.transpose(0,1)                                 # dim_a x K
-        M = torch.inverse(torch.mm(latent_T, latents))                    # dim_a x dim_a
+        latent_T = latents.transpose(0,1)                                        # dim_a x K
+        M = torch.inverse(torch.mm(latent_T, latents))                           # dim_a x dim_a
         
-        # Update matrix for torso position (height, roll, pitch, yaw)
-        self.mixing_torso_pos = torch.mm(torch.mm(M, latent_T), position_torso)                # dim_a x 4
+        # Update matrix for torso position (height, roll, pitch, yaw) 
+        self.mixing_torso_pos = torch.mm(torch.mm(M, latent_T), position_torso)  # dim_a x 4
         #     normalize mixing coefficents 
         if torch.norm( self.mixing_torso_pos, 'fro') > self.gamma:
              self.mixing_torso_pos =  self.mixing_torso_pos / torch.norm( self.mixing_torso_pos, 'fro') * self.gamma
 
         # Update matrix for q_state
-        self.mixing_q_pos = torch.mm(torch.mm(M, latent_T), q_state)                # dim_a x 4
+        self.mixing_q_pos = torch.mm(torch.mm(M, latent_T), q_state)             # dim_a x 12
         #     normalize mixing coefficents 
         if torch.norm( self.mixing_q_pos, 'fro') > self.gamma:
              self.mixing_q_pos =  self.mixing_q_pos / torch.norm( self.mixing_q_pos, 'fro') * self.gamma
 
         # Update matrix for torso velocity (z, y, z, roll, pitch, yaw)
-        self.mixing_torso_velo = torch.mm(torch.mm(M, latent_T), velocity_torso)                # dim_a x 4
+        self.mixing_torso_velo = torch.mm(torch.mm(M, latent_T), velocity_torso) # dim_a x 6
         #     normalize mixing coefficents 
         if torch.norm( self.mixing_torso_velo, 'fro') > self.gamma:
              self.mixing_torso_velo =  self.mixing_torso_velo / torch.norm( self.mixing_torso_velo, 'fro') * self.gamma
@@ -56,6 +56,7 @@ class WholeBody_PINN_Loss():
         for i in range(0, len(self.leg_joint_limits)):
             torch.clamp(q_preds[:,i], min=self.leg_joint_limits[i][0], max=self.leg_joint_limits[i][1])
         return q_preds
+    
     
     #     NOTE this does not reduce the loss batch-wise
     def calculate_pinn_loss(self, inputs, latents, residuals, position_torso, velocity_torso, ex_tau, ex_fr_tau):

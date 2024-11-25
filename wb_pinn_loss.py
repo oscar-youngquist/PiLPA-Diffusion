@@ -21,7 +21,10 @@ class WholeBody_PINN_Loss():
         # Create data required by the algorithms
         self.data = self.model.createData()
 
-        self.leg_joint_limits = [[], [], []]
+        self.leg_joint_limits = [[-1.047, 1.047], [-0.663, 2.966], [-0.837, -2.721],
+                                 [-1.047, 1.047], [-0.663, 2.966], [-0.837, -2.721],
+                                 [-1.047, 1.047], [-0.663, 2.966], [-0.837, -2.721],
+                                 [-1.047, 1.047], [-0.663, 2.966], [-0.837, -2.721]]
 
     
     def update_mixing_parameters(self, latents, position_torso, velocity_torso, q_state):

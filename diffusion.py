@@ -177,6 +177,7 @@ class Diffusion(nn.Module):
             x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
         else:
             x = torch.tensor(timestep[:,None], dtype=torch.float32) * freqs[None]
+            # x = timestep[:, None].clone().detach().float() * freqs[None] 
         # x = torch.tensor([timestep], dtype=torch.float32)[:, None] * freqs[None]
         # x = torch.tensor(temp, dtype=torch.float32)[:, None] * freqs[None]
         return torch.cat([torch.cos(x), torch.sin(x)], dim=-1)

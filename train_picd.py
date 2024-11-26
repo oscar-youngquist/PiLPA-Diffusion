@@ -66,10 +66,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PiCD")
     
     parser.add_argument('--train-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/training_data/', 
+                        default='/home/shauna/Research/PiLPA/PiLPA-Diffusion/data/rina/training_data/', 
                         help='Path to training data')
     parser.add_argument('--test-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/eval_data/', 
+                        default='/home/shauna/Research/PiLPA/PiLPA-Diffusion/data/rina/eval_data/', 
                         help='Path to eval data')
 
     # old carried over RINA params
@@ -82,12 +82,13 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0.1, help='Relative weight of discriminator loss (default: 0.1)')
     parser.add_argument('--frequency-h', type=float, default=2.0, help='Phi/Dis. update ratio (default: 2.0)')
     parser.add_argument('--K-shot', type=int, default=256, help='Hidden layer size for discriminator (default: 64)')
-    parser.add_argument('--phi-shot', type=int, default=512, help='Training batch-size (default: 64)')
+    parser.add_argument('--phi-shot', type=int, default=2048, help='Training batch-size (default: 64)')
     parser.add_argument('--device', type=str, default='cuda:0', help='Training device (default: cuda:0)')
 
     parser.add_argument('--phi-first-out', type=int, default=100, help='First/Third layer size (default: 100)')
     parser.add_argument('--phi-second-out', type=int, default=128, help='Second layer size (default: 128)')
-    parser.add_argument('--rina-model-path', type=str, default='/home/oyoungquist/Research/RINA/rina/training_results/PiLPA/11_17_202417_57_23_cmd_res_cc_100_128_a16_h40_e15000/models/rina_dim-a-16_torso_behavior_cmds-body_height-body_rpy-q-body_velo-body_ang_velo-q_dot-tau_cmd-epoch-15000')
+    # parser.add_argument('--rina-model-path', type=str, default='/home/oyoungquist/Research/RINA/rina/training_results/PiLPA/11_17_202417_57_23_cmd_res_cc_100_128_a16_h40_e15000/models/rina_dim-a-16_torso_behavior_cmds-body_height-body_rpy-q-body_velo-body_ang_velo-q_dot-tau_cmd-epoch-15000')
+    parser.add_argument('--rina-model-path', type=str, default='/home/shauna/Research/PiLPA/rina/training_results/PiLPA/models/rina_dim-a-16_torso_behavior_cmds-body_height-body_rpy-q-body_velo-body_ang_velo-q_dot-tau_cmd-epoch-15000')
 
     # binary decisions
     parser.add_argument('--shuffle', action="store_true", help='Shuffle training data (default: True)')
@@ -175,7 +176,7 @@ if __name__ == '__main__':
     options['shuffle']         = True
     options["body_offset"]     = 0
     options['K_shot']          = 256 # number of K-shot for least square on a
-    options['phi_shot']        = 512 # batch size for training phi
+    options['phi_shot']        = 2048 # batch size for training phi # 512 by default
     options['loss_type']       = 'crossentropy-loss'
     options['display_progress'] = False
 

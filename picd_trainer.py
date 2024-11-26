@@ -86,8 +86,8 @@ class Train_PICD():
                 trainset = utils.MyDataset(Data[i].X[:int(2/3*l)], Data[i].Y[:int(2/3*l)], Data[i].C) 
                 adaptset = utils.MyDataset(Data[i].X[int(2/3*l):], Data[i].Y[int(2/3*l):], Data[i].C)
 
-            trainloader = DataLoader(trainset, batch_size=options['phi_shot'], shuffle=options['shuffle'], num_workers=NUM_WORKERS)
-            adaptloader = DataLoader(adaptset, batch_size=options['K_shot'], shuffle=options['shuffle'], num_workers=NUM_WORKERS)
+            trainloader = DataLoader(trainset, batch_size=options['phi_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
+            adaptloader = DataLoader(adaptset, batch_size=options['K_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
 
             if len(trainloader) < self.num_batches:
                 self.num_batches = len(trainloader)
@@ -129,7 +129,7 @@ class Train_PICD():
         self.vae_encoder_optimizer = optim.Adam(self.vae_encoder.encoder.parameters(), lr=self.lr, eps=1e-08)
         self.vae_decoder_optimizer = optim.Adam(self.vae_encoder.decoder.parameters(), lr=self.lr, eps=1e-08)
         self.diffusion_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr, eps=1e-08)
-        self.discriminator_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr_discrim, eps=1e-08)
+        self.discriminator_optimizer = optim.Adam(self.discriminator.parameters(), lr=self.lr_discrim, eps=1e-08)
         self.vae_discriminator_optimizer = optim.Adam(self.vae_discrim.parameters(), lr=self.lr_discrim, eps=1e-08)
 
         self.histogram_adder(-1)
@@ -964,6 +964,19 @@ class Train_PICD():
                                        epoch)
                 validation_averages["diff_res"].append(val_res_err)
 
+                # diff_inf_loss for training_dataset
+                train_diff_res = []
+                for j in range(len(self.Data)):
+                    input, output, condition = self.Data[j].X, self.Data[j].Y, self.Data[j].C
+                    _, _, _, _, train_diff_inf_error = self.validation(input, output, condition)
+                    
+                    train_diff_res.append(train_diff_inf_error.item())
+                    
+                train_diff_res = np.mean(train_diff_res)
+                #    diff_residual_pred_loss loss
+                self.logger.add_scalar("train_epoch/diff_residual_loss_inf",
+                                        train_diff_res,
+                                        epoch)
             
             # Update the tensorboard weight histograms
             self.histogram_adder(epoch)

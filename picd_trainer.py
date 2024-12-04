@@ -16,6 +16,7 @@ from samplers import DDPM
 from diffusion import Diffusion, Discriminator
 from torchsummary import summary
 import mlmodel
+from wb_pinn_loss import WholeBody_PINN_Loss
 
 class Train_PICD():
 
@@ -58,14 +59,15 @@ class Train_PICD():
         print("\n***********Model output path: ", self.output_path_base)
         print("\t Loading Data....")
         RawData = utils.load_data(self.train_data_path)
-        Data = utils.format_data(RawData, features=self.features, output=self.label, body_offset=options["body_offset"])
+        Data = utils.format_data_pinn(RawData, features=self.features, output=self.label, body_offset=options["body_offset"])
         self.Data = Data
 
         RawDataTest = utils.load_data(self.test_data_path) # expnames='(baseline_)([0-9]*|no)wind'
-        self.TestData = utils.format_data(RawDataTest, features=self.features, output=self.label, body_offset=options["body_offset"])
+        self.TestData = utils.format_data_pinn(RawDataTest, features=self.features, output=self.label, body_offset=options["body_offset"])
 
         # Update options dict based on the shape of the data
-        self.options['dim_x'] = Data[0].X.shape[1]
+        #     add one to dim_x to account for time-step (not in dataset currently)
+        self.options['dim_x'] = Data[0].X.shape[1] + 1
         self.options['dim_y'] = Data[0].Y.shape[1]
         self.options['num_c'] = len(Data)
 
@@ -77,14 +79,15 @@ class Train_PICD():
         self.Adaptloader = []
         self.num_batches = 100000000000000
         for i in range(self.num_train_classes ):
-            fullset = utils.MyDataset(Data[i].X, Data[i].Y, Data[i].C)
+            fullset = utils.MyDatasetPINN(Data[i].X, Data[i].Y, Data[i].C, Data[i].T_Pose, Data[i].T_Velo, Data[i].QS, Data[i].TS, Data[i].FRS)
             
             l = len(Data[i].X)
             if options['shuffle']:
                 trainset, adaptset = random_split(fullset, [int(2/3*l), l-int(2/3*l)])
             else:
-                trainset = utils.MyDataset(Data[i].X[:int(2/3*l)], Data[i].Y[:int(2/3*l)], Data[i].C) 
-                adaptset = utils.MyDataset(Data[i].X[int(2/3*l):], Data[i].Y[int(2/3*l):], Data[i].C)
+                pass
+                # trainset = utils.MyDatasetPINN(Data[i].X[:int(2/3*l)], Data[i].Y[:int(2/3*l)], Data[i].C) 
+                # adaptset = utils.MyDatasetPINN(Data[i].X[int(2/3*l):], Data[i].Y[int(2/3*l):], Data[i].C)
 
             trainloader = DataLoader(trainset, batch_size=options['phi_shot'], shuffle=options['shuffle'], num_workers=NUM_WORKERS)
             adaptloader = DataLoader(adaptset, batch_size=options['K_shot'], shuffle=options['shuffle'], num_workers=NUM_WORKERS)
@@ -129,13 +132,15 @@ class Train_PICD():
         self.vae_encoder_optimizer = optim.Adam(self.vae_encoder.encoder.parameters(), lr=self.lr, eps=1e-08)
         self.vae_decoder_optimizer = optim.Adam(self.vae_encoder.decoder.parameters(), lr=self.lr, eps=1e-08)
         self.diffusion_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr, eps=1e-08)
-        self.discriminator_optimizer = optim.Adam(self.diff_model.parameters(), lr=self.lr_discrim, eps=1e-08)
+        self.discriminator_optimizer = optim.Adam(self.discriminator.parameters(), lr=self.lr_discrim, eps=1e-08)
         self.vae_discriminator_optimizer = optim.Adam(self.vae_discrim.parameters(), lr=self.lr_discrim, eps=1e-08)
 
         self.histogram_adder(-1)
 
         num_params_vae = self.count_parameters(self.vae_encoder.encoder)
         num_params_diff = self.count_parameters(self.diff_model)
+
+        self.pinn_loss = WholeBody_PINN_Loss(options)
 
         print("Number of parameters in VAE encoder: {:d}, # params in diff-model: {:d}".format(num_params_vae, num_params_diff))
         # print("\tDone building training class")
@@ -215,7 +220,9 @@ class Train_PICD():
                     self.vae_decoder_optimizer.zero_grad()
                     self.vae_encoder_optimizer.zero_grad()
 
-                    inputs = data['input'].to(torch.float32).to(self.device)     # B x dim_x
+                    inputs_ = data['input'].to(torch.float32).to(self.device)     # B x dim_x
+                    time_step = torch.ones((inputs_.shape[0], 1), requires_grad=True, device=self.device)*0.002
+                    inputs = torch.cat([time_step, inputs_], dim=1)
 
                     # encode the robot contexts
                     context, means, logvars = self.vae_encoder.encode(inputs)
@@ -358,8 +365,11 @@ class Train_PICD():
         # inputs = torch.from_numpy(fullset['input']).to(torch.float32).to(self.device)     # K x dim_x
         # labels = torch.from_numpy(fullset['output']).to(torch.float32).to(self.device)    # K x dim_y
         # fullset = utils.MyDataset(input, labels, C)
-        inputs = torch.from_numpy(input).to(torch.float32).to(self.device)     # K x dim_x
+        inputs_ = torch.from_numpy(input).to(torch.float32).to(self.device)     # K x dim_x
         labels = torch.from_numpy(labels).to(torch.float32).to(self.device)    # K x dim_y
+
+        time_step = torch.ones((inputs_.shape[0], 1), requires_grad=True, device=self.device)*0.002
+        inputs = torch.cat([time_step, inputs_], dim=1)
 
         self.vae_encoder.eval()
         self.vae_encoder.to(self.device)
@@ -421,7 +431,8 @@ class Train_PICD():
         step = 0
         training_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
                                         "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
-                                        "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[]}
+                                        "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[],
+                                        "pinn_torso":[], "pinn_wb":[], "w_pinn_total":[]}
         
         validation_averages = {"vae_recon":[], "vae_kl":[], "diff_discrim":[], 
                                 "diff_discrim_weighted":[], "diff":[], 
@@ -433,7 +444,8 @@ class Train_PICD():
 
             epoch_average_losses_train = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
                                         "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
-                                        "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[]}
+                                        "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[],
+                                        "pinn_torso":[], "pinn_wb":[], "w_pinn_total":[]}
 
             # randomly iterate over the condition-specific datasets self.num_batches
             for batch_idx in range(0, self.num_batches):
@@ -454,8 +466,12 @@ class Train_PICD():
                     #  Perform K-shot adaptation of mixing parameters M
                     ###
                     # print("\tAdapting M parameters....")
-                    X_kshot = kshot_data['input'].to(torch.float32).to(self.device)    # K x dim_x
+                    X_kshot_ = kshot_data['input'].to(torch.float32).to(self.device)    # K x dim_x
                     Y_kshot = kshot_data['output'].to(torch.float32).to(self.device)   # K x dim_y
+
+                    # TODO replace with actual time-step data...
+                    time_step = torch.ones((X_kshot_.shape[0], 1), requires_grad=False, device=self.device)*0.002
+                    X_kshot = torch.cat([time_step, X_kshot_], dim=1)
                     
                     # encode the context with the VAE context decoder
                     #     push VAE encoder to GPU
@@ -488,13 +504,21 @@ class Train_PICD():
                     if torch.norm(M_star, 'fro') > self.gamma:
                         M_star = M_star / torch.norm(M_star, 'fro') * self.gamma
 
-                    # TODO: add updating matricies for PINN losses...
+                    # Update matricies for PINN losses...
+                    torso_positions = kshot_data['torso_pose'].to(torch.float32).to(self.device)
+                    torso_velocities = kshot_data['torso_velo'].to(torch.float32).to(self.device)
+                    q_state = kshot_data['q_shift'].to(torch.float32).to(self.device)
+
+                    self.pinn_loss.update_mixing_parameters(latent, torso_positions, torso_velocities, q_state)
 
                     #    push data off of GPU
                     #    push diffusion model off of GPU
                     self.diff_model.cpu()
                     X_kshot.cpu()
                     Y_kshot.cpu()
+                    torso_positions.cpu()
+                    torso_velocities.cpu()
+                    q_state.cpu()
                     M.cpu()
                     # print("\tDone Adapting M parameters")
 
@@ -516,15 +540,25 @@ class Train_PICD():
                     ###
                     #  Use pretrained RINA model to create no-noise latent embeddings.... just like in Stable Diffusion paper
                     ###
-                    inputs = data['input'].to(torch.float32).to(self.device)     # B x dim_x
+                    inputs_ = data['input'].to(torch.float32).to(self.device).requires_grad_(True)     # B x dim_x
                     labels = data['output'].to(torch.float32).to(self.device)    # B x dim_y
+                    # TODO replace with actual time-step data...
+                    time_step = torch.ones((inputs_.shape[0], 1), requires_grad=True, device=self.device)*0.002
+                    inputs = torch.cat([time_step, inputs_], dim=1)
+
+                    # PINN Data
+                    torso_positions = data['torso_pose'].to(torch.float32).to(self.device)
+                    torso_velocities = data['torso_velo'].to(torch.float32).to(self.device)
+                    q_state = data['q_shift'].to(torch.float32).to(self.device)
+                    tau_ex = data['tau_shift'].to(torch.float32).to(self.device)
+                    fr_tau_ex = data['fr_tau'].to(torch.float32).to(self.device)
 
                     self.rina_model.to(self.device)
                     self.rina_model.eval()
                     latents_T = None
                     
                     with torch.no_grad():
-                        latents_T = self.rina_model(inputs)
+                        latents_T = self.rina_model(inputs_)
 
                     # print("\tDone Approximating Z^0 via least-sqaures")
 
@@ -535,11 +569,13 @@ class Train_PICD():
                     #     set models to training mode
                     self.vae_encoder.train()
                     self.diff_model.train()
-                    self.discriminator.train()
+                    self.discriminator.eval()
+                    self.vae_discrim.eval()
                     #     move models to GPU
                     self.vae_encoder.to(self.device)
                     self.diff_model.to(self.device)
                     self.discriminator.to(self.device)
+                    self.vae_discrim.to(self.device)
 
                     #     zero the optimizers
                     self.vae_decoder_optimizer.zero_grad()
@@ -604,11 +640,18 @@ class Train_PICD():
                     # Calculate Residual Targets
                     train_residuals = torch.mm(new_latents, M_star)
                     res_error = torch.mean(F.mse_loss(train_residuals, labels, reduction='none'), dim=1)
-                    weighted_res_pred_errors = self.residual_weight * res_error * pinn_weights
+                    weighted_res_pred_errors = res_error * pinn_weights
 
-                    # calculate the total doiffusion model loss (diffusion model loss and discriminator regularization)
-                    #  
-                    diff_loss_total = weighted_diff_loss + weighted_res_pred_errors - weighted_discrim_loss
+                    #     calculate PINN loss
+                    pinn_loss_wb, pinn_loss_torso = self.pinn_loss.calculate_pinn_loss(time_step, new_latents, train_residuals,
+                                                                                       torso_positions, torso_velocities, tau_ex,
+                                                                                       fr_tau_ex)
+                    total_pinn_loss = pinn_loss_wb + pinn_loss_torso
+                    weighted_total_pinn_loss = pinn_weights * total_pinn_loss
+                    # weighted_total_pinn_loss = weighted_total_pinn_loss
+
+                    #    calculate the total diffusion model loss (diffusion model loss and discriminator regularization)
+                    diff_loss_total = weighted_diff_loss + weighted_res_pred_errors + weighted_total_pinn_loss - weighted_discrim_loss
                     diff_loss_total = torch.mean(diff_loss_total)
 
                     #    VAE losses
@@ -617,12 +660,10 @@ class Train_PICD():
                     
                     vae_recon_loss = self.vae_encoder.compute_vae_recon_loss(inputs, decoded_context)
                     vae_kl_loss = self.vae_kl_weight * self.vae_encoder.compute_kld_loss(means, logvars)
-                    #    TODO: do we need to add weights to VAE components? probably need to scale the VAE losses down...
+
                     #    VAE losses ~10e5, diff-loss ~10e1....
                     vae_enc_loss = vae_recon_loss + vae_kl_loss + diff_loss_total - self.alpha*vae_discrim_loss
                     vae_dec_loss = vae_recon_loss
-
-                    #    TODO: Add PINN losses...
 
                     # update model parameters
                     #    do backwards passes
@@ -742,9 +783,7 @@ class Train_PICD():
                     ###
                     #  Log BATCH-Wise training results to logger
                     ###
-                    # {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "diff_discrim":[], 
-                    # "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
-                    # "diff_total":[], "discrim":[]}
+                    #  "pinn_torso":[], "pinn_wb":[], "w_pinn_total":[]
                     # print("\tLogging Batch {:d} Results....".format(step))
                         
                     #     VAE Reconstruction loss
@@ -816,6 +855,22 @@ class Train_PICD():
                                             weighted_res_pred_errors.item(),
                                             step)
                     epoch_average_losses_train["res_error_w"].append(weighted_res_pred_errors.item())
+                    # "pinn_torso":[], "pinn_wb":[], "w_pinn_total":[]
+                    pinn_loss_wb = torch.mean(pinn_loss_wb)
+                    self.logger.add_scalar("train/step/pinn_wb",
+                                            pinn_loss_wb.item(),
+                                            step)
+                    epoch_average_losses_train["pinn_wb"].append(pinn_loss_wb.item())
+                    pinn_loss_torso = torch.mean(pinn_loss_torso)
+                    self.logger.add_scalar("train/step/pinn_torso",
+                                            pinn_loss_torso.item(),
+                                            step)
+                    epoch_average_losses_train["pinn_torso"].append(pinn_loss_torso.item())
+                    weighted_total_pinn_loss = torch.mean(weighted_total_pinn_loss)
+                    self.logger.add_scalar("train/step/w_pinn_total",
+                                            weighted_total_pinn_loss.item(),
+                                            step)
+                    epoch_average_losses_train["w_pinn_total"].append(weighted_total_pinn_loss.item())
 
                     
 
@@ -906,6 +961,25 @@ class Train_PICD():
                                     epoch)
             training_averages["res_error_w"].extend(epoch_average_losses_train["res_error_w"])
             epoch_average_losses_train["res_error_w"] = []
+            # "pinn_torso":[], "pinn_wb":[], "w_pinn_total":[]
+            #     PINN wb error loss
+            self.logger.add_scalar("train_epoch/pinn_wb",
+                                    np.mean(epoch_average_losses_train["pinn_wb"]),
+                                    epoch)
+            training_averages["pinn_wb"].extend(epoch_average_losses_train["pinn_wb"])
+            epoch_average_losses_train["pinn_wb"] = []
+            #     PINN torso error loss
+            self.logger.add_scalar("train_epoch/pinn_torso",
+                                    np.mean(epoch_average_losses_train["pinn_torso"]),
+                                    epoch)
+            training_averages["pinn_torso"].extend(epoch_average_losses_train["pinn_torso"])
+            epoch_average_losses_train["pinn_torso"] = []
+            #     weighted PINN total error loss
+            self.logger.add_scalar("train_epoch/w_pinn_total",
+                                    np.mean(epoch_average_losses_train["w_pinn_total"]),
+                                    epoch)
+            training_averages["w_pinn_total"].extend(epoch_average_losses_train["w_pinn_total"])
+            epoch_average_losses_train["w_pinn_total"] = []
     
             ###
             #  Perform and log validation tests using EMA model
@@ -994,8 +1068,11 @@ class Train_PICD():
           
         # Adapt M_star on adaptation batch
         # print("\tValidation - Adapting M parameters....")
-        X_kshot = torch.from_numpy(adaptset['input']).to(torch.float32).to(self.device)     # K x dim_x
+        X_kshot_ = torch.from_numpy(adaptset['input']).to(torch.float32).to(self.device)     # K x dim_x
         Y_kshot = torch.from_numpy(adaptset['output']).to(torch.float32).to(self.device)    # K x dim_y
+
+        time_step = torch.ones((X_kshot_.shape[0], 1), requires_grad=False, device=self.device)*0.002
+        X_kshot = torch.cat([time_step, X_kshot_], dim=1)
         
         # encode the context with the VAE context decoder
         #     push VAE encoder to GPU
@@ -1050,15 +1127,18 @@ class Train_PICD():
         ###
         #  Use pretrained RINA model to create no-noise latent embeddings.... just like in Stable Diffusion paper
         ###
-        inputs = torch.from_numpy(trainset['input']).to(torch.float32).to(self.device)      # B x dim_x
+        inputs_ = torch.from_numpy(trainset['input']).to(torch.float32).to(self.device)      # B x dim_x
         labels = torch.from_numpy(trainset['output']).to(torch.float32).to(self.device)     # B x dim_y
-
+        # TODO replace with actual time-step data...
+        time_step = torch.ones((inputs_.shape[0], 1), requires_grad=True, device=self.device)*0.002
+        inputs = torch.cat([time_step, inputs_], dim=1)
+        
         self.rina_model.to(self.device)
         self.rina_model.eval()
         latents_T = None
         
         with torch.no_grad():
-            latents_T = self.rina_model(inputs)
+            latents_T = self.rina_model(inputs_)
 
         # print("\tValidation - Done Approximating Z^0 via least-sqaures")
 

@@ -89,56 +89,10 @@ class MyDatasetPINN(Dataset):
 
         return sample
 
-def load_data_pinn(folder : str, expnames = None) -> List[dict]:
-    ''' Loads csv files from {folder} and return as list of dictionaries of ndarrays '''
-    Data = []
-
-    if expnames is None:
-        filenames = os.listdir(folder)
-        # print(filenames)
-    elif isinstance(expnames, str): # if expnames is a string treat it as a regex expression
-        filenames = []
-        for filename in os.listdir(folder):
-            if re.search(expnames, filename) is not None:
-                filenames.append(filename)
-    elif isinstance(expnames, list):
-        filenames = (expname + '.csv' for expname in expnames)
-    else:
-        raise NotImplementedError()
-    for filename in filenames:
-        # Ingore not csv files, assume csv files are in the right format
-        if not filename.endswith('.csv'):
-            continue
-
-        # Load the csv using a pandas.DataFrame
-        df = pd.read_csv(folder + '/' + filename)
-        
-        # print(df.columns)
-
-        # Lists are loaded as strings by default, convert them back to lists
-        for field in df.columns[1:]:
-            if isinstance(df[field][0], str):
-                df[field] = df[field].apply(literal_eval)
-
-        # Copy all the data to a dictionary, and make things np.ndarrays
-        Data.append({})
-        for field in df.columns[1:]:
-            Data[-1][field] = np.array(df[field].tolist(), dtype=float)
-
-        # Add in some metadata from the filename
-        namesplit = filename.split('.')[0]
-        for i, field in enumerate(filename_fields):
-            Data[-1][field] = namesplit
-        # Data[-1]['method'] = namesplit[0]
-        # Data[-1]['condition'] = namesplit[1]
-
-    return Data
-
-
 SubDatasetPINN = namedtuple('SubDataset', 'X Y C T_Pose T_Velo QS TS FRS meta')
 feature_len = {}
 
-def format_data_pinn(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = ['v', 'q', 'pwm'], output: str = 'fa', body_offset = 6, ):
+def format_data_pinn(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = ['v', 'q', 'pwm'], output: str = 'fa', body_offset = 6):
     Data = []
     for i, data in enumerate(RawData):
         # Create input array
@@ -179,11 +133,9 @@ def format_data_pinn(RawData: List[Dict['str', np.ndarray]], features: 'list[str
         # print(data['condition'])
 
         # Save to dataset
-        Data.append(SubDataset(X, Y, C, T_Pose, T_Velo, QS, TS, FRS, {'condition': data['condition'], 'steps': data['steps']}))
+        Data.append(SubDatasetPINN(X, Y, C, T_Pose, T_Velo, QS, TS, FRS, {'condition': data['condition'], 'steps': data['steps']}))
 
     return Data
-
-
 
 class MyDataset(Dataset):
 

@@ -31,7 +31,7 @@ class WholeBody_PINN_Loss():
         # position_torso --> p_x, p_y, p_z, roll, pitch, yaw, (all for the next time-step)
         # velocity_torso --> p_velo (3), \Theta_velo (3) (all for next time-step)
         # q-state        --> leg joint positions (12)
-
+        # print("WholeBody_PINN_Loss.update_mixing_parameters() -- Updating PINN-Loss mixing parameters!")
         # used for all calculations
         latent_T = latents.transpose(0,1)                                        # dim_a x K
         M = torch.inverse(torch.mm(latent_T, latents))                           # dim_a x dim_a
@@ -82,12 +82,47 @@ class WholeBody_PINN_Loss():
         # clamp the leg joint position predictions to the joint limits (help clean up the gradients)
         wb_q_pos = self.clamp_q_preds(wb_q_pos)
 
-        # calculate the gradients of the of leg-joint states via auto-diff to approximate velocity and accelerations
-        q_velo_ad = torch.autograd.grad(wb_q_pos, inputs, create_graph=True)[0]
-        q_acc_ad = torch.autograd.grad(q_velo_ad, inputs)[0]
+        # print("inputs")
+        # print(inputs.shape)
+        # print(inputs[0])
 
-        # calculate the accelerations of the torso using auto-diff
-        torso_acc_ad = torch.autograd.grad(wb_velo, inputs)[0]
+        # print("wb_q_pos")
+        # print(wb_q_pos.shape)
+        # print(wb_q_pos[0])
+
+        # iterate over the q-poses and get the gradient w.r.t. time via auto-diff to approximate velocity and accelerations then concat
+        q_velo_ad = []
+        q_acc_ad = []
+        for i in range(0, wb_q_pos.shape[1]):
+            _q_velo_ad = torch.autograd.grad(wb_q_pos[:,i], inputs, create_graph=True, grad_outputs=torch.ones_like(wb_q_pos[:,i]))[0]
+            _q_acc_ad = torch.autograd.grad(_q_velo_ad, inputs, retain_graph=True, grad_outputs=torch.ones_like(_q_velo_ad))[0]
+            q_velo_ad.append(_q_velo_ad)
+            q_acc_ad.append(_q_acc_ad)
+        q_velo_ad = torch.cat(q_velo_ad, dim=1)
+        q_acc_ad = torch.cat(q_acc_ad, dim=1)
+
+        # print("q_velo_ad")
+        # print(q_velo_ad.shape)
+        # print(q_velo_ad[0])
+
+        # print("q_acc_ad")
+        # print(q_acc_ad.shape)
+        # print(q_acc_ad[0])
+
+        # print("wb_velo")
+        # print(wb_velo.shape)
+        # print(wb_velo[0])
+
+        # calculate the torso accelerations of the torso using auto-diff
+        torso_acc_ad = []
+        for i in range(0, wb_velo.shape[1]):
+            _torso_acc_ad = torch.autograd.grad(wb_velo[:,i], inputs, grad_outputs=torch.ones_like(wb_velo[:,i]), retain_graph=True)[0]
+            torso_acc_ad.append(_torso_acc_ad)
+        torso_acc_ad = torch.cat(torso_acc_ad, dim=1)
+
+        # print("torso_acc_ad")
+        # print(torso_acc_ad.shape)
+        # print(torso_acc_ad[0])
 
         # Create numpy version of PyTorch vectors to calculate M and b via pinocchio library
         wb_pos_np = wb_torso_pos.detach().cpu().numpy()
@@ -99,27 +134,27 @@ class WholeBody_PINN_Loss():
 
         Ws = []
         bs = []
-        #  TODO - might need to iterate over each example in the batch for this...
-        # create necessary state-vectors for pinocchio
         for i in range(0, inputs.shape[0]):
-            # create the 19x1 wb-state vector [3D-torso position, 4D torso quaternion, 12-D joint positions]
+            # create necessary state-vectors for pinocchio
+            #     create the 19x1 wb-state vector [3D-torso position, 4D torso quaternion, 12-D joint positions]
             body_x_y_z = np.array([position_target_np[i][0], position_target_np[i][1], wb_pos_np[i][0]])
             quat_body_ori = np.array(utils.euler_to_quaternion(wb_pos_np[i][1], wb_pos_np[i][2], wb_pos_np[i][3]))
             wb_state_np = np.concatenate((body_x_y_z, quat_body_ori, wb_q_pos_np[i]))
 
-            # create the 18x1 wb-velocity vectory [3D torso linear velocity, 3d torso angular veloctiy, 12-D joint velocities]
+            #     create the 18x1 wb-velocity vectory [3D torso linear velocity, 3d torso angular veloctiy, 12-D joint velocities]
             wb_velo_state_np = np.concatenate((wb_velo_np[i], q_velo_ad_np[i]))
 
-            # calculate M and b matrix using pinocchio
+            #     calculate A and b+g
+            #  matrix using pinocchio
             aq0 = np.zeros(self.model.nv)
-            # compute dynamic drift -- Coriolis, centrifugal, gravity
+            #     compute dynamic drift -- Coriolis, centrifugal, gravity
             b = pinocchio.rnea(self.model, self.data, wb_state_np, wb_velo_state_np, aq0)   # batch_size x 18
-            # compute mass matrix M
+            #     compute mass matrix A
             A = pinocchio.crba(self.model, self.data, wb_state_np)
 
             # add W and b to lists
-            Ws.append(torch.from_numpy(A).to(self.device))
-            bs.append(torch.from_numpy(b).to(self.device))
+            Ws.append(torch.Tensor(A).to(self.device))
+            bs.append(torch.Tensor(b).to(self.device))
 
         # end iteration over batch
 
@@ -127,20 +162,52 @@ class WholeBody_PINN_Loss():
         M_torch = torch.stack(Ws, dim=0)
         b_torch = torch.stack(bs, dim=0)
 
+        # print("M_torch")
+        # print(M_torch.shape)
+        # print("b_torch")
+        # print(b_torch.shape)
+
+        # print("torso_acc_ad.shape: ", torso_acc_ad.shape)
+        # print("q_acc_ad.shape: ", q_acc_ad.shape)
+
         # build necessary acceleration vector for WB loss calculation
-        wb_Q = torch.cat([torso_acc_ad, q_acc_ad], dim=0)    # batch_size x 18
+        wb_Q = torch.cat([torso_acc_ad, q_acc_ad], dim=1)    # batch_size x 18
+
+        # print("wb_Q")
+        # print(wb_Q.shape)
+        # print(wb_Q[0])
 
         # calculate wb-PINN loss
-        #     create a target vector filled with zeros
-        target = torch.zeros((latents.shape[0], 1), dtype=latents.dtype, device=self.device)
         #     use the full-body dynamics to calculate physics-informed residauls
-        #     M * Q + b - ex_tau - ex_fr_tau - residuals = 0
-        wb_res = M_torch * wb_Q + b_torch - ex_tau - ex_fr_tau - residuals
+        #     M * Q + b - ex_tau - ex_fr_tau - residuals = 0.... (might not be true for the torso....)
+        pinn_dynamics = torch.bmm(M_torch, wb_Q.unsqueeze(2)).squeeze() + b_torch
+
+        # used during debugging, remove later...
+        zeros_1 = torch.zeros((ex_tau.shape[0], 6), device=self.device)
+        zeros_2 = torch.zeros((ex_fr_tau.shape[0], 6), device=self.device)
+        ex_tau = torch.cat([zeros_1, ex_tau], dim=1)
+        ex_fr_tau = torch.cat([zeros_2, ex_fr_tau], dim=1)
+        #     
+        zeros = torch.zeros((residuals.shape[0], 6), device=self.device)
+        residuals = torch.cat([zeros, residuals], dim=1)
+
+        wb_res = pinn_dynamics - ex_tau - ex_fr_tau - residuals
+        #     create a target vector filled with zeros
+        target = torch.zeros_like(wb_res, dtype=latents.dtype, device=self.device)
         #     use PyTorch functional to calculate MSE loss 
         wb_pinn_loss = F.mse_loss(wb_res, target, reduction='none')
+        wb_pinn_loss = torch.mean(wb_pinn_loss, dim=1)
 
         #    calculate the loss of the model predicting the next time-step torso velocities
         wb_toros_velo_loss = F.mse_loss(wb_velo, velocity_torso, reduction='none')
         wb_toros_velo_loss = torch.mean(wb_toros_velo_loss, dim=1)
+
+        # print("wb_pinn_loss")
+        # print(wb_pinn_loss.shape)
+        # print(wb_pinn_loss[0])
+
+        # print("wb_toros_velo_loss")
+        # print(wb_toros_velo_loss.shape)
+        # print(wb_toros_velo_loss[0])
 
         return wb_pinn_loss, wb_toros_velo_loss

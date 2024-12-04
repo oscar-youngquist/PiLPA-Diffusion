@@ -66,11 +66,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PiCD")
     
     parser.add_argument('--train-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/training_data/', 
+                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/pinn_data/training_data_small/', 
                         help='Path to training data')
     parser.add_argument('--test-path', type=str, 
-                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/rina/eval_data/', 
+                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/data/pinn_data/eval_data/', 
                         help='Path to eval data')
+    
+    parser.add_argument('--urdf-path', type=str, 
+                        default='/home/oyoungquist/Research/PiLPA/PiLPA-Diffusion/go1_simplified.urdf', 
+                        help='Path model URDF file')
 
     # old carried over RINA params
     parser.add_argument('--num-epochs', type=int, default=10000, help='Number of epochs to train (default: 10000)')
@@ -136,7 +140,7 @@ if __name__ == '__main__':
     # values taken from https://arxiv.org/pdf/2303.09556.pdf
     parser.add_argument('--snr-min-value', type=float, default=2.0, help='Maximum SNR weight value (default: 5.0)')
     # PINN loss fixed noise covaraiance scale factor https://arxiv.org/pdf/2403.14404
-    parser.add_argument('--covar-scale', type=float, default=0.01, help='PINN loss weigth scale factor (default: 0.01)')
+    parser.add_argument('--covar-scale', type=float, default=0.005, help='PINN loss weigth scale factor (default: 0.01)')
 
 
     #    training params

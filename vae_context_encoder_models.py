@@ -170,8 +170,9 @@ class VAE_Conditioning_Model(nn.Module):
     
     # adding a mean to scale both of these to be in roughly the same order of magnitude as the diffusion loss
     def compute_kld_loss(self, mean, logvar):
-        kld = torch.mean(-0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()))
-        return kld
+        # kld = torch.mean(-0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp()))
+        kld = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp(), dim = 1)
+        return kld.mean()
     
     def compute_vae_recon_loss(self, x, x_hat):
         recon_loss = F.mse_loss(x_hat, x, reduction="mean")

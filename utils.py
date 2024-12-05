@@ -3,12 +3,13 @@ from typing import List, Dict
 from ast import literal_eval
 from collections import namedtuple
 import torch 
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from vae_context_encoder_models import VAE_Conditioning_Model
 from diffusion import Diffusion, Discriminator
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 folder = './data/experiment'
 filename_fields = ['condition']
@@ -73,6 +74,43 @@ class MyDataset(Dataset):
         sample = {'input': Input, 'output': output, 'c': self.c}
 
         return sample
+    
+
+# Custom sampler for uniform sampling across datasets
+class UniformConcatSampler(Sampler):
+    def __init__(self, datasets, num_samples_per_epoch):
+        self.datasets = datasets
+        self.num_samples_per_epoch = num_samples_per_epoch
+        self.total_samples = sum(len(d) for d in datasets)
+        self.num_datasets = len(datasets)
+        self.dataset_sizes = [len(d) for d in datasets]
+
+    def __iter__(self):
+        # Sample equal number of indices from each dataset
+        indices = []
+        samples_per_dataset = self.num_samples_per_epoch // self.num_datasets
+        for dataset_idx, dataset_size in enumerate(self.dataset_sizes):
+            sampled_indices = np.random.choice(
+                dataset_size, samples_per_dataset, replace=True
+            )
+            global_indices = sampled_indices + sum(self.dataset_sizes[:dataset_idx])
+            indices.extend(global_indices)
+        np.random.shuffle(indices)  # Shuffle the combined indices
+        return iter(indices)
+
+    def __len__(self):
+        return self.num_samples_per_epoch
+    
+
+
+
+    
+def process_column(data):
+    """Helper function to apply literal_eval to a pandas Series."""
+    column_name, series = data
+    if isinstance(series[0], str):
+        series = series.apply(literal_eval)
+    return column_name, series
 
 def load_data(folder : str, expnames = None) -> List[dict]:
     ''' Loads csv files from {folder} and return as list of dictionaries of ndarrays '''
@@ -90,35 +128,51 @@ def load_data(folder : str, expnames = None) -> List[dict]:
         filenames = (expname + '.csv' for expname in expnames)
     else:
         raise NotImplementedError()
-    for filename in filenames:
-        # Ingore not csv files, assume csv files are in the right format
+    
+    def process_file(filename):
+
+        # Ignore non-csv files
         if not filename.endswith('.csv'):
-            continue
+            return None
 
-        # Load the csv using a pandas.DataFrame
-        df = pd.read_csv(folder + '/' + filename)
-        
-        # print(df.columns)
+        # Load the CSV file using pandas
+        df = pd.read_csv(os.path.join(folder, filename))
 
-        # Lists are loaded as strings by default, convert them back to lists
+        # Parallelize processing of columns
+        with ProcessPoolExecutor() as executor:
+            results = list(executor.map(process_column, [(field, df[field]) for field in df.columns[1:]]))
+
+        # Reconstruct the DataFrame with processed columns
+        for col_name, processed_series in results:
+            df[col_name] = processed_series
+
+
+        # # Convert lists stored as strings back to actual lists
+        # for field in df.columns[1:]:
+        #     if isinstance(df[field][0], str):
+        #         df[field] = df[field].apply(literal_eval)
+        #     print(field)
+
+        # Prepare the data dictionary
+        data_dict = {}
         for field in df.columns[1:]:
-            if isinstance(df[field][0], str):
-                df[field] = df[field].apply(literal_eval)
+            data_dict[field] = np.array(df[field].tolist(), dtype=float)
 
-        # Copy all the data to a dictionary, and make things np.ndarrays
-        Data.append({})
-        for field in df.columns[1:]:
-            Data[-1][field] = np.array(df[field].tolist(), dtype=float)
-
-        # Add in some metadata from the filename
+        # Extract metadata from the filename
         namesplit = filename.split('.')[0]
-        for i, field in enumerate(filename_fields):
-            Data[-1][field] = namesplit
-        # Data[-1]['method'] = namesplit[0]
-        # Data[-1]['condition'] = namesplit[1]
+        for i, field in enumerate(filename_fields):  
+            data_dict[field] = namesplit
+
+        return data_dict
+
+    # Use ThreadPoolExecutor for parallel processing of files
+    with ThreadPoolExecutor() as executor:
+        results = list(executor.map(process_file, filenames))
+
+    # Filter out None results
+    Data = [result for result in results if result is not None]
 
     return Data
-
 
 SubDataset = namedtuple('SubDataset', 'X Y C meta')
 feature_len = {}
@@ -131,8 +185,7 @@ def format_data(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = 
         output: field to copy into the SubDataset.Y element
         hover_pwm_ratio: (average pwm at hover for testing data drone) / (average pwm at hover for training data drone)
          '''
-    Data = []
-    for i, data in enumerate(RawData):
+    def process_data(i, data):
         # Create input array
         X = []
         for feature in features:
@@ -142,31 +195,28 @@ def format_data(RawData: List[Dict['str', np.ndarray]], features: 'list[str]' = 
             except:
                 feature_len[feature] = 1
                 print(data[feature][:,np.newaxis].shape)
-                X.append(data[feature][:,np.newaxis])
+                X.append(data[feature][:, np.newaxis])
 
         X = np.hstack(X)
-
-        # print(X.shape)
 
         # Create label array
         Y = []
         for _label in data[output]:
             Y.append(_label[body_offset:])
-        
         Y = np.array(Y)
-
-        # print(Y.shape)
 
         # Pseudo-label for cross-entropy
         C = i
 
-        # print(data['condition'])
-
         # Save to dataset
-        Data.append(SubDataset(X, Y, C, {'condition': data['condition'], 'steps': data['steps']}))
+        return SubDataset(X, Y, C, {'condition': data['condition'], 'steps': data['steps']})
+    
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor() as executor:
+        results = list(executor.map(lambda idx_data: process_data(*idx_data), enumerate(RawData)))
 
-    return Data
-
+    return results
+    
 def plot_subdataset(data, features, labels, output_path, title_prefix=''):
     fig, axs = plt.subplots(4, len(features)+1, figsize=(10,10))
     leg_labels = ["FR", "FL", "RR", "RL"]

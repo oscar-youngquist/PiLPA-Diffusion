@@ -75,14 +75,14 @@ if __name__ == '__main__':
     # old carried over RINA params
     parser.add_argument('--num-epochs', type=int, default=10000, help='Number of epochs to train (default: 10000)')
     parser.add_argument('--learning-rate', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
-    parser.add_argument('--learning-rate-dis', type=float, default=0.00005, help='Learning rate (default: 0.00005)')
+    parser.add_argument('--learning-rate-dis', type=float, default=0.00001, help='Learning rate (default: 0.00005)')
     parser.add_argument('--model-save-freq', type=int, default=50, help='Number of epochs between model saves (default: 100)')
     parser.add_argument('--SN', type=float, default=6.0, help='Max single-layer spectural norm (default: 6.0)')
     parser.add_argument('--gamma', type=float, default=10, help='Max magnitude of a (default: 10.0)')
     parser.add_argument('--alpha', type=float, default=0.1, help='Relative weight of discriminator loss (default: 0.1)')
     parser.add_argument('--frequency-h', type=float, default=2.0, help='Phi/Dis. update ratio (default: 2.0)')
     parser.add_argument('--K-shot', type=int, default=256, help='Hidden layer size for discriminator (default: 64)')
-    parser.add_argument('--phi-shot', type=int, default=2048, help='Training batch-size (default: 64)')
+    parser.add_argument('--phi-shot', type=int, default=64, help='Training batch-size (default: 64)')
     parser.add_argument('--device', type=str, default='cuda:0', help='Training device (default: cuda:0)')
 
     parser.add_argument('--phi-first-out', type=int, default=100, help='First/Third layer size (default: 100)')
@@ -123,14 +123,14 @@ if __name__ == '__main__':
     parser.add_argument('--dim-a', type=int, default=16, help='Number of basis-functions (defaut: 12)')
     parser.add_argument('--n-heads', type=int, default=2, help='Number of attention head in diff. UNet context conditioning layers (default: 2)')
 
-    parser.add_argument('--kl-weight', type=float, default=0.0001, help='Maximum SNR weight value (default: 5.0)')
+    parser.add_argument('--kl-weight', type=float, default=1.0, help='Maximum SNR weight value (default: 5.0)')
     # PINN loss fixed noise covaraiance scale factor https://arxiv.org/pdf/2403.14404
-    parser.add_argument('--res-weight', type=float, default=0.1, help='PINN loss weigth scale factor (default: 0.01)')
+    parser.add_argument('--res-weight', type=float, default=0.05, help='PINN loss weigth scale factor (default: 0.01)')
 
     #    Diffusion scheduler parameters
-    parser.add_argument('--num-training-steps', type=int, default=10, help='Number of training steps for the diffusion model (default: 50)')
+    parser.add_argument('--num-training-steps', type=int, default=100, help='Number of training steps for the diffusion model (default: 50)')
     parser.add_argument('--num-inference-steps', type=int, default=5, help='Number of inference steps for the diffusion model (default: 5)')
-    parser.add_argument('--schedule-type', type=str, default='cosine', help='Type of beta schedule for diffusion model (default: \'cosine\')')
+    parser.add_argument('--schedule-type', type=str, default='quad', help='Type of beta schedule for diffusion model (default: \'cosine\')')
     # Params "beta_start" and "beta_end" taken from: https://github.com/CompVis/stable-diffusion/blob/21f890f9da3cfbeaba8e2ac3c425ee9e998d5229/configs/stable-diffusion/v1-inference.yaml#L5C8-L5C8
     parser.add_argument('--beta-start', type=float, default=0.00085, help='Beta starting value (default: 0.00085)')
     parser.add_argument('--beta-end', type=float, default=0.0120, help='Beta end value (default: 0.0120)')
@@ -155,7 +155,10 @@ if __name__ == '__main__':
     parser.add_argument('--label', type=str, default='tau_residual_cmd_cs', help='Name of training lable (target)')
     parser.add_argument('--output-prefix', type=str, default='', help='Prefix for output folder (default: '')')
 
-
+    # Added params for diffusion debugging
+    parser.add_argument('--alpha_vae', type=float, default=0.1, help='Relative weight of discriminator loss for VAE(default: 0.1)')
+    parser.add_argument('--normalize', action="store_true", help='Normalize the output of rina_model into -1 and 1 (default: True)')
+    parser.set_defaults(normalize=True)
     args = parser.parse_args()
 
     options = {}
@@ -176,7 +179,7 @@ if __name__ == '__main__':
     options['shuffle']         = True
     options["body_offset"]     = 0
     options['K_shot']          = 256 # number of K-shot for least square on a
-    options['phi_shot']        = 2048 # batch size for training phi # 512 by default
+    options['phi_shot']        = 512 # batch size for training phi # 512 by default
     options['loss_type']       = 'crossentropy-loss'
     options['display_progress'] = False
 
@@ -203,8 +206,10 @@ if __name__ == '__main__':
     run_training_loop(options)
 
 
-# python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 1
+# python3 train_picd.py --output-prefix finding_hyperparameters --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10
 
 # python3 train_picd.py --output-prefix debugging_implementation --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100 --dropout 0.3 --learning-rate 0.00001 --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --kl-weight 0.0001 --res-weight 0.1 --ema-decay 0
 
 # python3 train_picd.py --output-prefix debuging_vae_pretrain --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100 --dropout 0.3 --learning-rate 0.00001 --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --kl-weight 0.0001 --res-weight 0.1 --ema-decay 0 --vae-warm-up 10
+
+# python3 train_picd.py --output-prefix finding_hyperparameters --exp-name debug_tests --model-name basic_comp_model --ema-warm-up 10 --num-epochs 100  --learning-rate 0.00005  --learning-rate-dis 0.00001 --K-shot 1024 --phi-shot 2048 --ema-decay 0 --vae-warm-up 10

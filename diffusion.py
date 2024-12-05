@@ -199,6 +199,21 @@ class Diffusion(nn.Module):
         no_noise_pred = pre_scale * (latent - e_scale * e_hat)
 
         return no_noise_pred
+    
+    def get_pred_denoised_latent_no_forward_torch(self, e_hat, latent, alpha_bar):
+        
+        dims = latent.ndim    
+        new_dim = dims - alpha_bar.ndim
+
+        for _ in range(new_dim):
+            alpha_bar = alpha_bar.unsqueeze(-1).to(latent.device)
+        
+        # perform denoising step
+        pre_scale = 1 / torch.sqrt(alpha_bar)
+        e_scale = torch.sqrt(1-alpha_bar)
+        no_noise_pred = pre_scale * (latent - e_scale * e_hat)
+
+        return no_noise_pred
 
     def denoise_step(self, latent, context, time, alpha, alpha_bar, beta):
         new_latent = None

@@ -131,6 +131,23 @@ class DDPM:
             sys.exit()
 
         return self.pinn_weights[timestep] 
+    
+    # timestep is torch.tensor now
+    def get_alpha_bar_t(self, timestep):
+        if (timestep < 0).any() or (timestep > self.num_training_steps).any():
+            print("DDPM.get_alpha_bar(timestep):timestep {:d} is not valid, exiting".format(timestep))
+            sys.exit()
+        alpha_bar_t = self.alpha_bars[timestep]
+        return alpha_bar_t
+    
+    # timestep is torch.tensor now
+    def get_pinn_weight_torch(self, timestep):
+        if (timestep < 0).any() or (timestep > self.num_training_steps).any():
+            print("DDPM.get_pinn_weight(timestep):timestep {:d} is not valid, exiting".format(timestep))
+            sys.exit()
+
+        pinn_weights_t = self.pinn_weights[timestep] 
+        return pinn_weights_t
 
     def get_minSNR_weight(self, timestep):
         if timestep < 0 or timestep > self.num_training_steps:

@@ -243,7 +243,6 @@ class Diffusion(nn.Module):
         new_latent = pre_scale * (latent - e_scale * e_hat) + noise_scale*noise
         
         return new_latent
-    
 
     def denoise_step_no_forward(self, e_hat, latent, time, alpha, alpha_bar, beta):
         noise = self.sample_timestep_noise(latent, time)

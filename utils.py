@@ -75,36 +75,6 @@ class MyDataset(Dataset):
 
         return sample
     
-
-# Custom sampler for uniform sampling across datasets
-class UniformConcatSampler(Sampler):
-    def __init__(self, datasets, num_samples_per_epoch):
-        self.datasets = datasets
-        self.num_samples_per_epoch = num_samples_per_epoch
-        self.total_samples = sum(len(d) for d in datasets)
-        self.num_datasets = len(datasets)
-        self.dataset_sizes = [len(d) for d in datasets]
-
-    def __iter__(self):
-        # Sample equal number of indices from each dataset
-        indices = []
-        samples_per_dataset = self.num_samples_per_epoch // self.num_datasets
-        for dataset_idx, dataset_size in enumerate(self.dataset_sizes):
-            sampled_indices = np.random.choice(
-                dataset_size, samples_per_dataset, replace=True
-            )
-            global_indices = sampled_indices + sum(self.dataset_sizes[:dataset_idx])
-            indices.extend(global_indices)
-        np.random.shuffle(indices)  # Shuffle the combined indices
-        return iter(indices)
-
-    def __len__(self):
-        return self.num_samples_per_epoch
-    
-
-
-
-    
 def process_column(data):
     """Helper function to apply literal_eval to a pandas Series."""
     column_name, series = data

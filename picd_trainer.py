@@ -16,7 +16,6 @@ from samplers import DDPM
 from diffusion import Diffusion, Discriminator
 from torchsummary import summary
 import mlmodel
-from utils import UniformConcatSampler
 
 class Train_PICD():
 
@@ -24,7 +23,7 @@ class Train_PICD():
         if sys.platform == 'win32':
             NUM_WORKERS = 0 # Windows does not support multiprocessing
         else:
-            NUM_WORKERS = 1
+            NUM_WORKERS = 2
         print('running on ' + sys.platform + ', setting ' + str(NUM_WORKERS) + ' workers')
 
         # Extract some global values
@@ -64,8 +63,8 @@ class Train_PICD():
         Data = utils.format_data(RawData, features=self.features, output=self.label, body_offset=options["body_offset"])
         self.Data = Data
 
-        # RawDataTest = utils.load_data(self.test_data_path) # expnames='(baseline_)([0-9]*|no)wind'
-        # self.TestData = utils.format_data(RawDataTest, features=self.features, output=self.label, body_offset=options["body_offset"])
+        RawDataTest = utils.load_data(self.test_data_path) # expnames='(baseline_)([0-9]*|no)wind'
+        self.TestData = utils.format_data(RawDataTest, features=self.features, output=self.label, body_offset=options["body_offset"])
 
         # Update options dict based on the shape of the data
         self.options['dim_x'] = Data[0].X.shape[1]
@@ -73,35 +72,12 @@ class Train_PICD():
         self.options['num_c'] = len(Data)
 
         self.num_train_classes = options["num_c"]
-        # self.num_test_classes = len(self.TestData)
+        self.num_test_classes = len(self.TestData)
 
         # Make the dataloaders globally accessible
         self.Trainloader = []
         self.Adaptloader = []
         self.num_batches = 100000000000000
-        num_samples_per_epoch = float('inf')
-        num_samples_per_epoch_ada = float('inf')
-
-        datasets = []
-        adaptdataset = []
-        # for i in range(self.num_train_classes ):
-        #     fullset = utils.MyDataset(Data[i].X, Data[i].Y, Data[i].C)
-            
-        #     l = len(Data[i].X)
-        #     if options['shuffle']:
-        #         trainset, adaptset = random_split(fullset, [int(2/3*l), l-int(2/3*l)])
-        #     else:
-        #         trainset = utils.MyDataset(Data[i].X[:int(2/3*l)], Data[i].Y[:int(2/3*l)], Data[i].C) 
-        #         adaptset = utils.MyDataset(Data[i].X[int(2/3*l):], Data[i].Y[int(2/3*l):], Data[i].C)
-
-        #     trainloader = DataLoader(trainset, batch_size=options['phi_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
-        #     adaptloader = DataLoader(adaptset, batch_size=options['K_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
-
-        #     if len(trainloader) < self.num_batches:
-        #         self.num_batches = len(trainloader)
-
-        #     self.Trainloader.append(trainloader) # for training model
-        #     self.Adaptloader.append(adaptloader) # for LS on M
 
         for i in range(self.num_train_classes ):
             fullset = utils.MyDataset(Data[i].X, Data[i].Y, Data[i].C)
@@ -113,32 +89,15 @@ class Train_PICD():
                 trainset = utils.MyDataset(Data[i].X[:int(2/3*l)], Data[i].Y[:int(2/3*l)], Data[i].C) 
                 adaptset = utils.MyDataset(Data[i].X[int(2/3*l):], Data[i].Y[int(2/3*l):], Data[i].C)
 
-            if len(trainset) < num_samples_per_epoch:
-                num_samples_per_epoch = len(trainset)
+            trainloader = DataLoader(trainset, batch_size=options['phi_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
+            adaptloader = DataLoader(adaptset, batch_size=options['K_shot'], shuffle=options['shuffle'], persistent_workers=True ,num_workers=NUM_WORKERS)
 
-            if len(adaptset) < num_samples_per_epoch_ada:
-                num_samples_per_epoch_ada = len(adaptset)
+            if len(trainloader) < self.num_batches:
+                self.num_batches = len(trainloader)
 
-            datasets.append(trainset)
-            adaptdataset.append(adaptset)
-        num_samples_per_epoch *= self.num_train_classes
-        num_samples_per_epoch_ada *= self.num_train_classes
-        num_samples_per_epoch = self.adjust_num_samples(num_samples_per_epoch, options['phi_shot'])
-        num_samples_per_epoch_ada = self.adjust_num_samples(num_samples_per_epoch_ada, options['K_shot'])
+            self.Trainloader.append(trainloader) # for training model
+            self.Adaptloader.append(adaptloader) # for LS on M
 
-        combined_trainset = ConcatDataset(datasets)
-        combined_adaset = ConcatDataset(adaptdataset)
-
-        # Create the sampler
-        trainsampler = UniformConcatSampler(datasets, num_samples_per_epoch)
-        adapsampler = UniformConcatSampler(adaptdataset, num_samples_per_epoch_ada)
-
-        # Create DataLoader using the custom sampler
-        trainloader = DataLoader(combined_trainset, batch_size=options['phi_shot'], sampler=trainsampler)
-        adaptloader = DataLoader(combined_adaset, batch_size =options['K_shot'], sampler=adapsampler )
-
-        self.trainloader = trainloader
-        self.adaptloader = adaptloader
 
         print("\t Done Loading Data. Num Batches: {:d}".format(self.num_batches))
         print("\t Building Models....")
@@ -185,7 +144,6 @@ class Train_PICD():
 
         print("Number of parameters in VAE encoder: {:d}, # params in diff-model: {:d}".format(num_params_vae, num_params_diff))
         # print("\tDone building training class")
-
 
     # dump current config file to a json
     def save_config(self, output_path):
@@ -238,26 +196,32 @@ class Train_PICD():
 
     def check_max_min_value(self):
 
+        self.rina_model.to(self.device)
+        self.rina_model.eval()
+
         min_vals = torch.full((self.dim_a,), float('inf'), device=self.device)  # Initialize with infinity for min
         max_vals = torch.full((self.dim_a,), float('-inf'), device=self.device)  # Initialize with -infinity for max
+        for i in np.arange(self.num_train_classes):
+            trainloader = self.Trainloader[i]
+            for batch_idx in range(0, self.num_batches):
+                with torch.no_grad():
+                    data = next(iter(trainloader))
+                    inputs = data['input'].to(torch.float32).to(self.device)  # B x dim_x
 
-        with torch.no_grad():
-            for data in self.trainloader:  # Loop over batches
-                inputs = data['input'].to(torch.float32).to(self.device)  # B x dim_x
+                    # Get latents
+                    latents_T = self.rina_model(inputs)  # Assumed output: B x latent_dim
 
-                self.rina_model.to(self.device)
-                self.rina_model.eval()
-
-                # Get latents
-                latents_T = self.rina_model(inputs)  # Assumed output: B x latent_dim
-
-                # Update min and max values
-                min_vals = torch.min(min_vals, torch.min(latents_T, dim=0).values)
-                max_vals = torch.max(max_vals, torch.max(latents_T, dim=0).values)
+                    # Update min and max values
+                    min_vals = torch.min(min_vals, torch.min(latents_T, dim=0).values)
+                    max_vals = torch.max(max_vals, torch.max(latents_T, dim=0).values)
 
         self.min = min_vals
         self.max = max_vals
 
+
+        print(min_vals, max_vals)
+    
+    
         print(min_vals, max_vals)
     
     def normalize_latent(self, latent):
@@ -265,13 +229,9 @@ class Train_PICD():
         min_vals = self.min.to(latent.device)
         max_vals = self.max.to(latent.device)
 
-        # Avoid division by zero by adding a small epsilon
         epsilon = 1e-8
         range_vals = max_vals - min_vals + epsilon
-
-        # Normalize data to range [-1, 1]
         normalized_data = 2 * (latent - min_vals) / range_vals - 1
-
         return normalized_data
     
     def denormalize_latent(self, latents_n):
@@ -279,10 +239,8 @@ class Train_PICD():
         min_vals = self.min.to(latents_n.device)
         max_vals = self.max.to(latents_n.device)
 
-        # Avoid division by zero by adding a small epsilon
         epsilon = 1e-8
         range_vals = max_vals - min_vals + epsilon
-
         denormalized_latent = ((latents_n + 1) / 2) * range_vals + min_vals
         return denormalized_latent
 
@@ -365,20 +323,13 @@ class Train_PICD():
                     if self.sn > 0:
                         # print("\tSpectural Normalization....")
                         #    VAE
-                        # self.vae_encoder.cpu()
-                        # for param in self.vae_encoder.parameters():
-                        #     W = param.detach().numpy()
-                        #     if W.ndim > 1:
-                        #         s = np.linalg.norm(W,2)
-                        #         if s > self.sn:
-                        #             param.data = (param / s) * self.sn
-
+                        self.vae_encoder.cpu()
                         for param in self.vae_encoder.parameters():
-                            W = param.data  
-                            if W.ndimension() > 1:
-                                s = torch.linalg.norm(W, ord=2) 
+                            W = param.detach().numpy()
+                            if W.ndim > 1:
+                                s = np.linalg.norm(W,2)
                                 if s > self.sn:
-                                    param.data = (W / s) * self.sn  
+                                    param.data = (param / s) * self.sn
 
                     # vae_training_averages = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "vae_discrim":[], "vae_discriminator":[]}
                     #     VAE Reconstruction loss
@@ -563,7 +514,7 @@ class Train_PICD():
             epoch_average_losses_train = {"vae_recon":[], "vae_kl":[], "vae_encoder":[], "vae_decoder":[], "vae_discriminator":[], "diff_discrim":[], "vae_discrim":[],
                                         "diff_discrim_weighted":[], "diff":[], "diff_weighted":[],
                                         "diff_total":[], "discrim":[], "res_error":[], "res_error_w":[]}
-
+            
             # randomly iterate over the condition-specific datasets self.num_batches
             for batch_idx in range(0, self.num_batches):
                 # print("\tStarting Batch: {:d}".format(batch_idx))
@@ -883,25 +834,17 @@ class Train_PICD():
 
                         
                         # diffusion model
-                        # self.diff_model.cpu()
-                        # for param in self.diff_model.parameters():
-                        #     W = param.detach().numpy()
-                        #     if W.ndim > 1:
-                        #         s = np.linalg.norm(W,2)
-                        #         if s > self.sn:
-                        #             param.data = (param / s) * self.sn
-
-                        # diffusion model
+                        self.diff_model.cpu()
                         for param in self.diff_model.parameters():
-                            W = param.data  # Access the data tensor directly
-                            if W.ndimension() > 1:  # Check if the parameter is a matrix
-                                s = torch.linalg.norm(W, ord=2)  # Compute spectral norm on GPU
+                            W = param.detach().numpy()
+                            if W.ndim > 1:
+                                s = np.linalg.norm(W,2)
                                 if s > self.sn:
-                                    param.data = (W / s) * self.sn  # Normalize in-place
+                                    param.data = (param / s) * self.sn
                         
                         # print("\tDone with Spectural Normalization")
 
-                    
+                
                     ###
                     #  Perform EMA (Temporal Averaging) Updates
                     ###
@@ -1018,14 +961,14 @@ class Train_PICD():
                                             step)
                     epoch_average_losses_train["res_error_w"].append(weighted_res_pred_errors.item())
 
-                    
+                
 
                     # print("\tDone Logging Batch Results....")
 
 
                     # increment our step counter for each processed batch
                     step += 1
-                # end iteration over sub-datasets
+                    # end iteration over sub-datasets
             # end iteration over num_batches
 
             ###
@@ -1177,22 +1120,8 @@ class Train_PICD():
                                        epoch)
                 validation_averages["diff_res"].append(val_res_err)
 
-                # # diff_inf_loss for training_dataset
-                # train_diff_res = []
-                # for j in range(len(self.Data)):
-                #     input, output, condition = self.Data[j].X, self.Data[j].Y, self.Data[j].C
-                #     _, _, _, _, train_diff_inf_error = self.validation(input, output, condition)
-                    
-                #     train_diff_res.append(train_diff_inf_error.item())
-                    
-                # train_diff_res = np.mean(train_diff_res)
-                # #    diff_residual_pred_loss loss
-                # self.logger.add_scalar("train_epoch/diff_residual_loss_inf",
-                #                         train_diff_res,
-                #                         epoch)
-            
             # Update the tensorboard weight histograms
-            # self.histogram_adder(epoch)
+            self.histogram_adder(epoch)
             
             ###
             #  Save model
@@ -1274,10 +1203,10 @@ class Train_PICD():
 
         #    push data off of GPU
         #    push diffusion model off of GPU
-        # self.diff_model.cpu()
-        # X_kshot.cpu()
-        # Y_kshot.cpu()
-        # M.cpu()
+        self.diff_model.cpu()
+        X_kshot.cpu()
+        Y_kshot.cpu()
+        M.cpu()
         # print("\tDone Adapting M parameters")
 
         # # Calculate Z^T on test batch
@@ -1344,17 +1273,6 @@ class Train_PICD():
         alpha_bar_t = self.scheduler.get_alpha_bar_t(ts)
         # calcualte the completely denoised latent using the predicted e_hat 
         new_latents = self.diff_model_ema.get_pred_denoised_latent_no_forward_torch(e_hat, noisy_latents, alpha_bar_t)
-
-
-        # new_latents = []
-        # for idx, t in enumerate(ts):
-        #     # pull out the scheduler params
-        #     alpha_bar_t = self.scheduler.get_alpha_bar(t)
-        #     # calcualte the completely denoised latent using the predicted e_hat 
-        #     new_latent = self.diff_model_ema.get_pred_denoised_latent_no_forward(e_hat[idx], noisy_latents[idx], alpha_bar_t)
-        #     new_latents.append(new_latent)
-
-        # new_latents = torch.stack(new_latents, dim=0)
 
         if self.normalize:
             new_latents = self.denormalize_latent(new_latents)

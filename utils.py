@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from vae_context_encoder_models import VAE_Conditioning_Model
 from diffusion import Diffusion, Discriminator
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import random
 
 folder = './data/experiment'
 filename_fields = ['condition']
@@ -74,6 +75,55 @@ class MyDataset(Dataset):
         sample = {'input': Input, 'output': output, 'c': self.c}
 
         return sample
+    
+class RandomDataloaderWrapper:
+    def __init__(self, dataloaders_list1, dataloaders_list2):
+        """
+        Args:
+            dataloaders_list1: A list of DataLoaders (first group).
+            dataloaders_list2: A list of DataLoaders (second group).
+        """
+        self.dataloaders_list1 = dataloaders_list1
+        self.dataloaders_list2 = dataloaders_list2
+        self.iterators_list1 = [iter(dl) for dl in dataloaders_list1]
+        self.iterators_list2 = [iter(dl) for dl in dataloaders_list2]
+
+    def __iter__(self):
+
+        while True:
+        # if self.max_batches is not None and self.current_batches >= self.max_batches:
+        #     raise StopIteration  # Stop the iteration when max_batches is reached
+            # Randomly select a DataLoader from each list
+            idx = random.randint(0, len(self.dataloaders_list1) - 1)
+
+            dataloader1 = self.dataloaders_list1[idx]
+            dataloader2 = self.dataloaders_list2[idx]
+            iter1 = self.iterators_list1[idx]
+            iter2 = self.iterators_list2[idx]
+
+            # Get batch from the first DataLoader
+            try:
+                batch1 = next(iter1)
+            except StopIteration:
+                # Reset iterator if exhausted
+                self.iterators_list1[idx] = iter(dataloader1)
+                iter1 = self.iterators_list1[idx]
+                batch1 = next(iter1)
+
+            # Get batch from the second DataLoader
+            try:
+                batch2 = next(iter2)
+            except StopIteration:
+                # Reset iterator if exhausted
+                self.iterators_list2[idx] = iter(dataloader2)
+                iter2 = self.iterators_list2[idx]
+                batch2 = next(iter2)
+
+            yield batch1, batch2
+
+
+
+
     
 def process_column(data):
     """Helper function to apply literal_eval to a pandas Series."""
